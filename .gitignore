@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# PyInstaller / py2app
+build/
+dist/
+*.spec
+
+# macOS
+.DS_Store
+
+# 日志
+*.log

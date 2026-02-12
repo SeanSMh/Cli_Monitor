@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""
+终端任务状态监控系统 - 监控层 (Python Monitor)
+Logcat 模式：实时读取日志文件，分析 CLI 任务状态并输出监控看板。
+
+用法:
+    python3 monitor.py [--sound] [--max-tasks N] [--log-dir DIR]
+"""
+
+import os
+import sys
+import time
+import glob
+import re
+import argparse
+
+# === 配置区 ===
+DEFAULT_LOG_DIR = "/tmp/ai_monitor_logs"
+DEFAULT_REFRESH_RATE = 1.0   # 刷新频率 (秒)
+DEFAULT_MAX_TASKS = 5        # 默认显示最近 N 个任务
+TAIL_BYTES = 4096            # 尾部读取字节数 (避免大文件全量加载)
+IDLE_THRESHOLD_SECONDS = 60  # 通用兆底阈值: 60 秒无新输出 (仅用于无特征匹配的未知工具)
+
+# 状态正则匹配规则 (根据你的工具习惯调整)
+WAIT_PATTERNS = [
+    r"\(y/n\)",              # 匹配 (y/n)
+    r"\(Y/n\)",              # 匹配 (Y/n)
+    r"\(yes/no\)",           # 匹配 (yes/no)
+    r"Confirm\?",            # 匹配 Confirm?
+    r"\[\?\]",               # 匹配 inquirer 风格的选择框
+    r"Press Enter",          # 匹配回车继续
+    r"Do you want to",       # 询问句
+    r"Would you like to",    # 询问句
+    r"Apply changes\?",      # 应用变更
+]
+
+# AI 工具空闲特征 (表示 AI 已完成回复，等待用户输入)
+IDLE_PATTERNS = [
+    r"\? for shortcuts",      # codex / claude 空闲提示符
+    r"context left",          # codex 空闲底栏
+]
+
+# AI 工具工作中特征 (表示 AI 正在生成/思考)
+BUSY_PATTERNS = [
+    r"esc to interrupt",      # codex / claude 正在生成
+    r"Working\(",             # codex 正在工作
+    r"Thinking",              # claude 思考中
+]
+
+# ANSI 颜色/样式代码
+RESET    = "\033[0m"
+GREEN    = "\033[32m"
+YELLOW   = "\033[33m"
+GRAY     = "\033[90m"
+BOLD     = "\033[1m"
+BLINK    = "\033[5m"
+CYAN     = "\033[36m"
+DIM      = "\033[2m"
+
+
+# === 核心逻辑 ===
+
+def tail_read(filepath, num_bytes=TAIL_BYTES):
+    """高效读取文件尾部内容，避免大文件全量加载"""
+    try:
+        file_size = os.path.getsize(filepath)
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            if file_size > num_bytes:
+                f.seek(file_size - num_bytes)
+                # 跳过可能的不完整行
+                f.readline()
+            lines = f.readlines()
+        return lines
+    except Exception:
+        return []
+
+
+def parse_start_info(filepath):
+    """解析日志文件头部的 MONITOR_START 信息"""
+    tool_name = "unknown"
+    start_time = ""
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            first_line = f.readline()
+        match = re.search(r"MONITOR_START:\s*(\S+)\s*\|\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", first_line)
+        if match:
+            tool_name = match.group(1)
+            start_time = match.group(2).strip()
+        else:
+            # 兼容旧格式: --- MONITOR_START: tool_name ---
+            match = re.search(r"MONITOR_START:\s*(\S+)", first_line)
+            if match:
+                tool_name = match.group(1)
+    except Exception:
+        pass
+
+    # Fallback: 从文件名提取工具名 (格式: toolname_timestamp_pid_random.log)
+    if tool_name == "unknown":
+        try:
+            basename = os.path.basename(filepath)
+            name_part = basename.split("_")[0]
+            if name_part:
+                tool_name = name_part
+        except Exception:
+            pass
+
+    return tool_name, start_time
+
+
+def parse_end_info(lines):
+    """从日志尾部解析 MONITOR_END 信息"""
+    for line in reversed(lines):
+        stripped = line.strip()
+        if "MONITOR_END" in stripped:
+            match = re.search(r"MONITOR_END:\s*(\d+)", stripped)
+            exit_code = int(match.group(1)) if match else -1
+            time_match = re.search(r"\|\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", stripped)
+            end_time = time_match.group(1).strip() if time_match else ""
+            return True, exit_code, end_time
+    return False, -1, ""
+
+
+def calculate_duration(start_time, end_time):
+    """计算任务耗时"""
+    if not start_time or not end_time:
+        return ""
+    try:
+        from datetime import datetime
+        fmt = "%Y-%m-%d %H:%M:%S"
+        start = datetime.strptime(start_time, fmt)
+        end = datetime.strptime(end_time, fmt)
+        delta = end - start
+        total_seconds = int(delta.total_seconds())
+        if total_seconds < 0:
+            return ""
+        minutes, seconds = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours}h{minutes}m{seconds}s"
+        elif minutes > 0:
+            return f"{minutes}m{seconds}s"
+        else:
+            return f"{seconds}s"
+    except Exception:
+        return ""
+
+
+def analyze_log(filepath):
+    """
+    分析日志文件以确定任务状态。
+
+    Returns:
+        (status, message, exit_code, duration)
+        status:    "RUNNING" | "WAITING" | "IDLE" | "DONE"
+        message:   最新输出内容摘要
+        exit_code: 退出码 (仅 DONE 状态有效, 否则 -1)
+        duration:  耗时字符串 (仅 DONE 状态有效)
+    """
+    lines = tail_read(filepath)
+
+    if not lines:
+        return "RUNNING", "初始化...", -1, ""
+
+    # 解析起始信息
+    tool_name, start_time = parse_start_info(filepath)
+
+    # 检查是否已结束
+    is_done, exit_code, end_time = parse_end_info(lines)
+    if is_done:
+        duration = calculate_duration(start_time, end_time)
+        return "DONE", "任务完成", exit_code, duration
+
+    # 取尾部上下文 (最后 5 行) 用于状态模式匹配
+    tail_lines = lines[-5:]
+
+    # 先清除 ANSI 转义序列，避免匹配到终端控制码产生误报
+    def strip_ansi(s):
+        return re.sub(r'\033\[[0-9;?]*[A-Za-z]', '', s)
+
+    clean_lines = [strip_ansi(l) for l in tail_lines]
+    context = "".join(clean_lines)
+    last_line = clean_lines[-1].strip() if clean_lines else ""
+
+    # 清理控制字符
+    last_line = re.sub(r'[\x00-\x1f\x7f]', '', last_line)
+
+    # 匹配"等待确认"模式
+    for pattern in WAIT_PATTERNS:
+        if re.search(pattern, context, re.IGNORECASE):
+            # 提取匹配到的那一行作为消息
+            for line in reversed(clean_lines):
+                stripped = line.strip()
+                stripped = re.sub(r'[\x00-\x1f\x7f]', '', stripped)
+                if re.search(pattern, stripped, re.IGNORECASE):
+                    return "WAITING", stripped[:60], -1, ""
+            return "WAITING", last_line[:60], -1, ""
+
+    # AI 工具特征匹配: 检查是否出现空闲特征 (零延迟)
+    # 策略: 比较 IDLE_PATTERNS 和 BUSY_PATTERNS 在尾部的最后出现位置
+    # 如果 IDLE 特征出现在 BUSY 特征之后, 则判定为空闲
+    last_idle_pos = -1
+    for pattern in IDLE_PATTERNS:
+        for m in re.finditer(pattern, context, re.IGNORECASE):
+            last_idle_pos = max(last_idle_pos, m.end())
+
+    if last_idle_pos > 0:
+        last_busy_pos = -1
+        for pattern in BUSY_PATTERNS:
+            for m in re.finditer(pattern, context, re.IGNORECASE):
+                last_busy_pos = max(last_busy_pos, m.end())
+
+        if last_idle_pos > last_busy_pos:
+            return "IDLE", "等待输入", -1, ""
+
+    # 通用兆底: 文件超过 60 秒无新输出 (适用于未知工具)
+    try:
+        mtime = os.path.getmtime(filepath)
+        idle_seconds = time.time() - mtime
+        if idle_seconds > IDLE_THRESHOLD_SECONDS:
+            return "IDLE", "等待输入", -1, ""
+    except Exception:
+        pass
+
+    # 默认: 运行中
+    return "RUNNING", last_line[:60], -1, ""
+
+
+def clear_screen():
+    """跨平台清屏 (ANSI 转义序列)"""
+    sys.stdout.write("\033[H\033[J")
+    sys.stdout.flush()
+
+
+def format_status(status, exit_code=-1):
+    """格式化状态显示 (带颜色和 emoji)"""
+    if status == "WAITING":
+        return f"{BLINK}{YELLOW}🟡 待确认{RESET}"
+    elif status == "IDLE":
+        return f"{CYAN}🔵 等待输入{RESET}"
+    elif status == "RUNNING":
+        return f"{GREEN}🟢 运行中{RESET}"
+    else:  # DONE
+        if exit_code == 0:
+            return f"{GRAY}⚪ 已完成{RESET}"
+        elif exit_code > 0:
+            return f"{GRAY}🔴 异常退出({exit_code}){RESET}"
+        else:
+            return f"{GRAY}⚪ 已结束{RESET}"
+
+
+def render_dashboard(log_dir, max_tasks, enable_sound):
+    """渲染监控看板"""
+    # 获取所有日志并按修改时间倒序排列
+    log_files = glob.glob(os.path.join(log_dir, "*.log"))
+    log_files.sort(key=os.path.getmtime, reverse=True)
+
+    # 仅展示最近 N 个任务
+    active_logs = log_files[:max_tasks]
+
+    clear_screen()
+
+    # 标题栏
+    print(f"{BOLD}{CYAN}╔══════════════════════════════════════════════════════════════╗{RESET}")
+    print(f"{BOLD}{CYAN}║{RESET}  🛡️  CLI 任务监控看板    {DIM}{time.strftime('%Y-%m-%d %H:%M:%S')}{RESET}  {BOLD}{CYAN}║{RESET}")
+    print(f"{BOLD}{CYAN}╠══════════════════════════════════════════════════════════════╣{RESET}")
+    print(f"{BOLD}{CYAN}║{RESET} {'工具':<10} {'状态':<14} {'耗时':<10} {'最新输出':<26} {BOLD}{CYAN}║{RESET}")
+    print(f"{BOLD}{CYAN}╠══════════════════════════════════════════════════════════════╣{RESET}")
+
+    if not active_logs:
+        print(f"{BOLD}{CYAN}║{RESET}  {DIM}暂无活跃任务... 在其他终端运行被监控的命令即可{RESET}          {BOLD}{CYAN}║{RESET}")
+    else:
+        has_waiting = False
+        for log_file in active_logs:
+            tool_name, _ = parse_start_info(log_file)
+            status, msg, exit_code, duration = analyze_log(log_file)
+
+            if status == "WAITING":
+                has_waiting = True
+
+            status_str = format_status(status, exit_code)
+            duration_str = duration if duration else "—"
+
+            # 截断过长的消息
+            if len(msg) > 24:
+                msg = msg[:21] + "..."
+
+            # 清洁化消息 (移除 ANSI 转义等)
+            msg = re.sub(r'\033\[[0-9;]*m', '', msg)
+            msg = re.sub(r'[\x00-\x1f\x7f]', '', msg)
+
+            print(f"{BOLD}{CYAN}║{RESET} {tool_name:<10} {status_str:<25} {duration_str:<10} {msg:<26}{BOLD}{CYAN}║{RESET}")
+
+        # 声音提醒
+        if has_waiting and enable_sound:
+            sys.stdout.write('\a')
+            sys.stdout.flush()
+
+    print(f"{BOLD}{CYAN}╚══════════════════════════════════════════════════════════════╝{RESET}")
+    print(f"\n  {DIM}按 Ctrl+C 退出监控  |  日志目录: {log_dir}{RESET}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="🛡️ CLI 任务状态监控看板 (Logcat Mode)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python3 monitor.py                    # 默认启动
+  python3 monitor.py --sound            # 启用声音提醒
+  python3 monitor.py --max-tasks 10     # 显示最近 10 个任务
+  python3 monitor.py --log-dir /tmp/my  # 自定义日志目录
+        """
+    )
+    parser.add_argument(
+        "--sound", action="store_true", default=False,
+        help="在检测到「待确认」状态时播放系统提示音"
+    )
+    parser.add_argument(
+        "--max-tasks", type=int, default=DEFAULT_MAX_TASKS,
+        help=f"最大显示任务数 (默认: {DEFAULT_MAX_TASKS})"
+    )
+    parser.add_argument(
+        "--log-dir", type=str, default=DEFAULT_LOG_DIR,
+        help=f"日志目录路径 (默认: {DEFAULT_LOG_DIR})"
+    )
+    parser.add_argument(
+        "--refresh", type=float, default=DEFAULT_REFRESH_RATE,
+        help=f"刷新频率，单位秒 (默认: {DEFAULT_REFRESH_RATE})"
+    )
+
+    args = parser.parse_args()
+
+    log_dir = args.log_dir
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        print(f"已创建日志目录: {log_dir}")
+
+    print(f"🛡️  监控已启动 | 日志目录: {log_dir} | 刷新: {args.refresh}s")
+    print(f"   按 Ctrl+C 退出\n")
+    time.sleep(1)
+
+    try:
+        while True:
+            render_dashboard(log_dir, args.max_tasks, args.sound)
+            time.sleep(args.refresh)
+    except KeyboardInterrupt:
+        clear_screen()
+        print(f"\n{GREEN}✅ 监控已退出。{RESET}")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
