@@ -47,6 +47,7 @@ from monitor import (
     analyze_log,
     parse_start_info,
     calculate_duration,
+    clear_rate_history,
     DEFAULT_LOG_DIR,
 )
 
@@ -427,6 +428,8 @@ class Api:
         try:
             if os.path.exists(log_file) and log_file.startswith(LOG_DIR):
                 os.remove(log_file)
+                # 清理速率跟踪历史, 避免内存泄漏
+                clear_rate_history(log_file)
         except Exception:
             pass
 

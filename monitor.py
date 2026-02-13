@@ -68,15 +68,33 @@ DIM      = "\033[2m"
 # === 核心逻辑 ===
 
 def tail_read(filepath, num_bytes=TAIL_BYTES):
-    """高效读取文件尾部内容，避免大文件全量加载"""
+    """高效读取文件尾部内容，避免大文件全量加载。
+    使用 rb 模式读取后手动解码，避免 seek 到多字节 UTF-8 字符中间导致乱码。
+    """
     try:
         file_size = os.path.getsize(filepath)
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+        with open(filepath, "rb") as f:
             if file_size > num_bytes:
                 f.seek(file_size - num_bytes)
-                # 跳过可能的不完整行
-                f.readline()
-            lines = f.readlines()
+                raw = f.read()
+            else:
+                raw = f.read()
+
+        # 安全解码: 从头找到第一个合法 UTF-8 起始字节
+        text = ""
+        for offset in range(min(4, len(raw))):
+            try:
+                text = raw[offset:].decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+
+        lines = text.splitlines(keepends=True)
+        # 丢弃第一行 (可能是不完整行, 仅在 seek 过的情况下)
+        if file_size > num_bytes and lines:
+            lines = lines[1:]
         return lines
     except Exception:
         return []
@@ -239,13 +257,17 @@ def analyze_log(filepath):
 
     # ── 层 0: Claude Hook 信号文件检测 (即时, 0 延迟) ──
     # 如果是 claude 任务, 且信号文件存在且新鲜, 立即判定 IDLE
+    # 多会话安全: 只有当信号时间在 [log_mtime - 2, now] 范围内才关联
     if tool_name == "claude" and os.path.exists(SIGNAL_FILE):
         try:
             signal_mtime = os.path.getmtime(SIGNAL_FILE)
             log_mtime = os.path.getmtime(filepath)
             age = time.time() - signal_mtime
-            # 信号在 15 秒内, 且信号时间 >= 日志上次写入时间 (说明是本次会话的信号)
-            if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 2:
+            # 条件 1: 信号必须新鲜 (15 秒内)
+            # 条件 2: 信号时间 >= 日志最后写入时间 (信号在日志停止后产生)
+            # 条件 3: 日志当前不在活跃写入中 (日志也静止了至少 1 秒)
+            log_idle = time.time() - log_mtime
+            if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 2 and log_idle > 1:
                 return "IDLE", "AI 已完成回复", -1, ""
         except Exception:
             pass
