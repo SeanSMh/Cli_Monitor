@@ -12,6 +12,7 @@ import os
 import sys
 import glob
 import re
+import json
 import atexit
 import signal
 import subprocess
@@ -59,6 +60,13 @@ TEMP_WRAPPER = "/tmp/cli_monitor_session.sh"
 INJECT_MARKER = "# >>> cli-monitor-session >>>"
 INJECT_END = "# <<< cli-monitor-session <<<"
 SHELL_WRAPPER_SOURCE = os.path.join(SCRIPT_DIR, "shell", "cli_monitor.sh")
+
+# Claude Code Hooks 注入
+CLAUDE_SETTINGS = os.path.expanduser("~/.claude/settings.json")
+HOOK_MARKER = "CLI_MONITOR_HOOK"  # 用于识别我们注入的 hook
+SIGNAL_FILE = os.path.join(LOG_DIR, "_claude_idle_signal")
+# Hook 命令: Claude 完成回复时写信号文件
+HOOK_COMMAND = f"echo $(date +%s) > {SIGNAL_FILE}  # {HOOK_MARKER}"
 
 _cleanup_done = False
 
@@ -149,6 +157,100 @@ def cleanup_shell_wrapper():
             os.remove(TEMP_WRAPPER)
     except Exception:
         pass
+
+
+# ===========================================
+# Claude Code Hooks 临时注入
+# ===========================================
+
+
+def inject_claude_hooks():
+    """将 Stop hook 注入到 ~/.claude/settings.json"""
+    if not os.path.exists(os.path.dirname(CLAUDE_SETTINGS)):
+        print("[CLI Monitor] ⏭️  未检测到 Claude Code, 跳过 Hooks 注入")
+        return False
+
+    try:
+        # 读取现有配置
+        settings = {}
+        if os.path.exists(CLAUDE_SETTINGS):
+            with open(CLAUDE_SETTINGS, "r") as f:
+                settings = json.load(f)
+
+        # 检查是否已注入
+        hooks = settings.get("hooks", {})
+        stop_hooks = hooks.get("Stop", [])
+        for entry in stop_hooks:
+            for h in entry.get("hooks", []):
+                if HOOK_MARKER in h.get("command", ""):
+                    print("[CLI Monitor] ✅ Claude Hooks 已存在, 跳过")
+                    return True
+
+        # 添加 Stop hook
+        our_hook = {
+            "matcher": "",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": HOOK_COMMAND,
+                }
+            ],
+        }
+        stop_hooks.append(our_hook)
+        hooks["Stop"] = stop_hooks
+        settings["hooks"] = hooks
+
+        # 写回
+        with open(CLAUDE_SETTINGS, "w") as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+
+        print("[CLI Monitor] ✅ Claude Hooks 已注入 (Stop → 写信号文件)")
+        return True
+    except Exception as e:
+        print(f"[CLI Monitor] ⚠️  Claude Hooks 注入失败: {e}")
+        return False
+
+
+def cleanup_claude_hooks():
+    """从 ~/.claude/settings.json 移除我们注入的 hook"""
+    if not os.path.exists(CLAUDE_SETTINGS):
+        return
+
+    try:
+        with open(CLAUDE_SETTINGS, "r") as f:
+            settings = json.load(f)
+
+        hooks = settings.get("hooks", {})
+        stop_hooks = hooks.get("Stop", [])
+
+        # 过滤掉包含我们标记的条目
+        filtered = []
+        for entry in stop_hooks:
+            entry_hooks = entry.get("hooks", [])
+            clean = [h for h in entry_hooks if HOOK_MARKER not in h.get("command", "")]
+            if clean:
+                entry["hooks"] = clean
+                filtered.append(entry)
+
+        if filtered:
+            hooks["Stop"] = filtered
+        else:
+            hooks.pop("Stop", None)
+
+        # 如果 hooks 为空, 移除整个字段
+        if not hooks:
+            settings.pop("hooks", None)
+
+        with open(CLAUDE_SETTINGS, "w") as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+
+        # 清理信号文件
+        if os.path.exists(SIGNAL_FILE):
+            os.remove(SIGNAL_FILE)
+
+        print("[CLI Monitor] ✅ Claude Hooks 已清理")
+    except Exception as e:
+        print(f"[CLI Monitor] ⚠️  Claude Hooks 清理失败: {e}")
 
 
 def send_notification(title, subtitle, message):
@@ -369,10 +471,16 @@ def main():
     os.makedirs(LOG_DIR, exist_ok=True)
 
     inject_shell_wrapper()
-    atexit.register(cleanup_shell_wrapper)
+    inject_claude_hooks()
+
+    def _cleanup_all():
+        cleanup_shell_wrapper()
+        cleanup_claude_hooks()
+
+    atexit.register(_cleanup_all)
 
     def _signal_handler(signum, frame):
-        cleanup_shell_wrapper()
+        _cleanup_all()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _signal_handler)
@@ -403,7 +511,7 @@ def main():
     webview.start(func=on_started, debug=False)
 
     # webview 退出后清理
-    cleanup_shell_wrapper()
+    _cleanup_all()
 
 
 if __name__ == "__main__":
