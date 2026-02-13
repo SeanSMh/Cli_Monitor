@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLI Monitor</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* ===== 深色主题 (默认) ===== */
+        :root {
+            --bg-primary: #0F1118;
+            --bg-secondary: #161822;
+            --bg-card: #1C1F2E;
+            --bg-card-hover: #242838;
+            --bg-elevated: rgba(255, 255, 255, 0.03);
+
+            --text-primary: #E8EAED;
+            --text-secondary: #8B8FA3;
+            --text-tertiary: #565A6E;
+
+            --border-subtle: rgba(255, 255, 255, 0.06);
+            --border-card: rgba(255, 255, 255, 0.08);
+
+            --green: #34D399;
+            --green-bg: rgba(52, 211, 153, 0.08);
+            --green-border: rgba(52, 211, 153, 0.2);
+            --green-glow: rgba(52, 211, 153, 0.4);
+
+            --blue: #60A5FA;
+            --blue-bg: rgba(96, 165, 250, 0.08);
+            --blue-border: rgba(96, 165, 250, 0.2);
+            --blue-glow: rgba(96, 165, 250, 0.4);
+
+            --amber: #FBBF24;
+            --amber-bg: rgba(251, 191, 36, 0.08);
+            --amber-border: rgba(251, 191, 36, 0.2);
+            --amber-glow: rgba(251, 191, 36, 0.4);
+
+            --muted: #565A6E;
+            --muted-bg: rgba(86, 90, 110, 0.06);
+
+            --rose: #FB7185;
+            --rose-bg: rgba(251, 113, 133, 0.08);
+            --rose-border: rgba(251, 113, 133, 0.2);
+            --rose-glow: rgba(251, 113, 133, 0.4);
+
+            --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+            --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.2);
+            --radius: 14px;
+        }
+
+        /* ===== 浅色主题 ===== */
+        [data-theme="light"] {
+            --bg-primary: #F5F6FA;
+            --bg-secondary: #EDEEF3;
+            --bg-card: #FFFFFF;
+            --bg-card-hover: #F8F9FC;
+            --bg-elevated: rgba(0, 0, 0, 0.02);
+
+            --text-primary: #1A1D2E;
+            --text-secondary: #6B7082;
+            --text-tertiary: #9CA0B0;
+
+            --border-subtle: rgba(0, 0, 0, 0.06);
+            --border-card: rgba(0, 0, 0, 0.08);
+
+            --green: #16A34A;
+            --green-bg: rgba(22, 163, 74, 0.06);
+            --green-border: rgba(22, 163, 74, 0.18);
+            --green-glow: rgba(22, 163, 74, 0.12);
+
+            --blue: #2563EB;
+            --blue-bg: rgba(37, 99, 235, 0.06);
+            --blue-border: rgba(37, 99, 235, 0.18);
+            --blue-glow: rgba(37, 99, 235, 0.12);
+
+            --amber: #D97706;
+            --amber-bg: rgba(217, 119, 6, 0.06);
+            --amber-border: rgba(217, 119, 6, 0.18);
+            --amber-glow: rgba(217, 119, 6, 0.12);
+
+            --muted: #9CA0B0;
+            --muted-bg: rgba(156, 160, 176, 0.08);
+
+            --rose: #E11D48;
+            --rose-bg: rgba(225, 29, 72, 0.06);
+            --rose-border: rgba(225, 29, 72, 0.15);
+            --rose-glow: rgba(225, 29, 72, 0.1);
+
+            --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04);
+            --shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+            transition: background 0.35s ease, color 0.35s ease;
+        }
+
+        /* ===== 顶部标题栏 ===== */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 22px 10px;
+            -webkit-app-region: drag;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .header-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, var(--green), var(--blue));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            box-shadow: 0 2px 8px rgba(52, 211, 153, 0.2);
+            transition: all 0.3s;
+        }
+
+        .header-title {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+
+        .header-subtitle {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            margin-top: 1px;
+            font-weight: 500;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 4px;
+            -webkit-app-region: no-drag;
+        }
+
+        .btn-icon {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-secondary);
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .btn-icon:hover {
+            color: var(--text-primary);
+            background: var(--bg-card);
+            border-color: var(--border-card);
+            transform: scale(1.05);
+        }
+
+        .btn-icon:active {
+            transform: scale(0.95);
+        }
+
+        /* ===== 任务网格 ===== */
+        .task-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            padding: 8px 22px 14px;
+            overflow-y: auto;
+        }
+
+        .task-grid::-webkit-scrollbar {
+            width: 3px;
+        }
+
+        .task-grid::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .task-grid::-webkit-scrollbar-thumb {
+            background: var(--text-tertiary);
+            border-radius: 3px;
+        }
+
+        /* ===== 任务卡片 ===== */
+        .task-card {
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            padding: 14px 16px;
+            border: 1px solid var(--border-card);
+            box-shadow: var(--shadow-card);
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: default;
+        }
+
+        .task-card::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            transition: all 0.3s;
+        }
+
+        .task-card:hover {
+            background: var(--bg-card-hover);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-card-hover);
+        }
+
+        /* --- 运行中 --- */
+        .task-card.running {
+            border-color: var(--green-border);
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--green-bg) 100%);
+        }
+
+        .task-card.running::before {
+            background: var(--green);
+        }
+
+        .task-card.running:hover {
+            border-color: var(--green);
+        }
+
+        /* --- 等待输入 --- */
+        .task-card.idle {
+            border-color: var(--blue-border);
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--blue-bg) 100%);
+        }
+
+        .task-card.idle::before {
+            background: var(--blue);
+            animation: glow-blue 2.5s ease-in-out infinite;
+        }
+
+        .task-card.idle:hover {
+            border-color: var(--blue);
+        }
+
+        /* --- 待确认 --- */
+        .task-card.waiting {
+            border-color: var(--amber-border);
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--amber-bg) 100%);
+        }
+
+        .task-card.waiting::before {
+            background: var(--amber);
+            animation: glow-amber 1.8s ease-in-out infinite;
+        }
+
+        .task-card.waiting:hover {
+            border-color: var(--amber);
+        }
+
+        /* --- 已结束 --- */
+        .task-card.done {
+            opacity: 0.5;
+            border-color: var(--border-subtle);
+        }
+
+        .task-card.done::before {
+            background: var(--muted);
+        }
+
+        .task-card.done:hover {
+            opacity: 0.7;
+        }
+
+        /* --- 异常退出 --- */
+        .task-card.error {
+            border-color: var(--rose-border);
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--rose-bg) 100%);
+        }
+
+        .task-card.error::before {
+            background: var(--rose);
+        }
+
+        .task-card.error:hover {
+            border-color: var(--rose);
+        }
+
+        @keyframes glow-blue {
+
+            0%,
+            100% {
+                box-shadow: 0 0 4px var(--blue-glow);
+                width: 3px;
+            }
+
+            50% {
+                box-shadow: 0 0 10px var(--blue-glow);
+                width: 4px;
+            }
+        }
+
+        @keyframes glow-amber {
+
+            0%,
+            100% {
+                box-shadow: 0 0 4px var(--amber-glow);
+                width: 3px;
+            }
+
+            50% {
+                box-shadow: 0 0 10px var(--amber-glow);
+                width: 4px;
+            }
+        }
+
+        /* 卡片内容 */
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .status-dot.running {
+            background: var(--green);
+            box-shadow: 0 0 6px var(--green-glow);
+        }
+
+        .status-dot.idle {
+            background: var(--blue);
+            box-shadow: 0 0 6px var(--blue-glow);
+            animation: dot-pulse 2s ease-in-out infinite;
+        }
+
+        .status-dot.waiting {
+            background: var(--amber);
+            box-shadow: 0 0 6px var(--amber-glow);
+            animation: dot-pulse 1.5s ease-in-out infinite;
+        }
+
+        .status-dot.done {
+            background: var(--muted);
+        }
+
+        .status-dot.error {
+            background: var(--rose);
+            box-shadow: 0 0 6px var(--rose-glow);
+        }
+
+        @keyframes dot-pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.5;
+                transform: scale(0.8);
+            }
+        }
+
+        .card-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .tool-name {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .card-info {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-tertiary);
+            margin-top: 3px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .card-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .card-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 3px 8px;
+            border-radius: 6px;
+            letter-spacing: 0.3px;
+            white-space: nowrap;
+        }
+
+        .card-badge.running {
+            color: var(--green);
+            background: var(--green-bg);
+        }
+
+        .card-badge.idle {
+            color: var(--blue);
+            background: var(--blue-bg);
+        }
+
+        .card-badge.waiting {
+            color: var(--amber);
+            background: var(--amber-bg);
+        }
+
+        .card-badge.done {
+            color: var(--muted);
+            background: var(--muted-bg);
+        }
+
+        .card-badge.error {
+            color: var(--rose);
+            background: var(--rose-bg);
+        }
+
+        .btn-delete {
+            width: 20px;
+            height: 20px;
+            border-radius: 5px;
+            border: none;
+            background: transparent;
+            color: var(--text-tertiary);
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: all 0.2s;
+        }
+
+        .task-card:hover .btn-delete {
+            opacity: 1;
+        }
+
+        .btn-delete:hover {
+            background: var(--rose-bg);
+            color: var(--rose);
+        }
+
+        /* ===== 空状态 ===== */
+        .empty-state {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 50px 20px;
+        }
+
+        .empty-graphic {
+            width: 64px;
+            height: 64px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, var(--green-bg), var(--blue-bg));
+            border: 1px solid var(--border-card);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            margin: 0 auto 16px;
+        }
+
+        .empty-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .empty-sub {
+            font-size: 12px;
+            color: var(--text-tertiary);
+            line-height: 1.5;
+        }
+
+        /* ===== 底部操作栏 ===== */
+        .footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 22px 14px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .footer-left {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 500;
+            font-family: 'Inter', sans-serif;
+            padding: 5px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .btn:hover {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border-color: var(--border-card);
+        }
+
+        .btn:active {
+            transform: scale(0.96);
+        }
+
+        .btn.quit {
+            color: var(--rose);
+            border-color: var(--rose-border);
+        }
+
+        .btn.quit:hover {
+            background: var(--rose-bg);
+            color: var(--rose);
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="header">
+        <div class="header-left">
+            <div class="header-icon">🛡</div>
+            <div>
+                <div class="header-title">CLI Monitor</div>
+                <div class="header-subtitle" id="subtitle">加载中...</div>
+            </div>
+        </div>
+        <div class="header-actions">
+            <button class="btn-icon" onclick="toggleTheme()" title="切换主题" id="themeBtn">🌙</button>
+            <button class="btn-icon" onclick="refresh()" title="刷新">↻</button>
+        </div>
+    </div>
+
+    <div class="task-grid" id="taskGrid">
+        <div class="empty-state">
+            <div class="empty-graphic">🛡</div>
+            <div class="empty-title">加载中...</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <div class="footer-left">
+            <button class="btn" onclick="refresh()">↻ 刷新</button>
+            <button class="btn" onclick="openLogs()">📂 日志</button>
+        </div>
+        <button class="btn quit" onclick="quit()">⏻ 退出</button>
+    </div>
+
+    <script>
+        const BADGE_LABELS = {
+            running: '运行中', idle: '等待输入', waiting: '待确认', done: '已结束', error: '异常',
+        };
+
+        function getCardClass(t) {
+            if (t.status === 'DONE' && t.exit_code > 0) return 'error';
+            return { RUNNING: 'running', IDLE: 'idle', WAITING: 'waiting', DONE: 'done' }[t.status] || 'running';
+        }
+
+        function getBadgeText(t) {
+            if (t.status === 'DONE' && t.exit_code > 0) return `退出(${t.exit_code})`;
+            return BADGE_LABELS[getCardClass(t)] || '运行中';
+        }
+
+        function getInfoText(t) {
+            if (t.duration) return `⏱ ${t.duration}`;
+            if (t.message && t.status !== 'DONE') {
+                return t.message.length > 32 ? t.message.slice(0, 29) + '…' : t.message;
+            }
+            return '';
+        }
+
+        function renderTasks(tasks) {
+            const grid = document.getElementById('taskGrid');
+            const sub = document.getElementById('subtitle');
+
+            if (!tasks || tasks.length === 0) {
+                sub.textContent = '暂无活跃任务';
+                grid.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-graphic">🛡</div>
+          <div class="empty-title">暂无活跃任务</div>
+          <div class="empty-sub">在终端中运行 codex、claude 等命令<br>即可自动开始监控</div>
+        </div>`;
+                return;
+            }
+
+            const active = tasks.filter(t => t.status !== 'DONE').length;
+            sub.textContent = `${active} 个活跃 · 共 ${tasks.length} 个任务`;
+
+            grid.innerHTML = tasks.map(t => {
+                const cls = getCardClass(t);
+                const info = getInfoText(t);
+                return `
+        <div class="task-card ${cls}">
+          <div class="status-dot ${cls}"></div>
+          <div class="card-body">
+            <div class="tool-name">${t.tool}</div>
+            ${info ? `<div class="card-info">${info}</div>` : ''}
+          </div>
+          <div class="card-right">
+            <span class="card-badge ${cls}">${getBadgeText(t)}</span>
+            <button class="btn-delete" onclick="deleteTask('${t.log_file.replace(/'/g, "\\'")}')"
+                    title="删除任务">×</button>
+          </div>
+        </div>`;
+            }).join('');
+
+            // 自适应窗口高度
+            requestAnimationFrame(autoResize);
+        }
+
+        async function refresh() {
+            try {
+                const tasks = await pywebview.api.get_tasks();
+                renderTasks(tasks);
+            } catch (e) { console.error('刷新失败:', e); }
+        }
+
+        async function deleteTask(logFile) {
+            try {
+                await pywebview.api.delete_task(logFile);
+                refresh();
+            } catch (e) { }
+        }
+
+        function autoResize() {
+            try {
+                const h = Math.min(Math.max(document.body.scrollHeight, 200), 600);
+                pywebview.api.resize_window(640, h);
+            } catch (e) { }
+        }
+
+        async function openLogs() {
+            try { await pywebview.api.open_logs(); } catch (e) { }
+        }
+
+        async function quit() {
+            try { await pywebview.api.quit_app(); } catch (e) { }
+        }
+
+        function toggleTheme() {
+            const html = document.documentElement;
+            const next = html.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            html.setAttribute('data-theme', next === 'dark' ? '' : 'light');
+            document.getElementById('themeBtn').textContent = next === 'light' ? '☀️' : '🌙';
+            localStorage.setItem('cli-monitor-theme', next);
+        }
+
+        function initTheme() {
+            const s = localStorage.getItem('cli-monitor-theme');
+            if (s === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+                document.getElementById('themeBtn').textContent = '☀️';
+            }
+        }
+
+        setInterval(refresh, 2000);
+        initTheme();
+        window.addEventListener('pywebviewready', () => { refresh(); });
+    </script>
+
+</body>
+
+</html>
