@@ -112,6 +112,9 @@
             user-select: none;
             -webkit-user-select: none;
             transition: background 0.35s ease, color 0.35s ease;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
         }
 
         /* ===== 顶部标题栏 ===== */
@@ -121,6 +124,7 @@
             justify-content: space-between;
             padding: 18px 22px 10px;
             -webkit-app-region: drag;
+            flex-shrink: 0;
         }
 
         .header-left {
@@ -227,6 +231,7 @@
             align-items: center;
             gap: 10px;
             cursor: default;
+            user-select: none;
         }
 
         .task-card::before {
@@ -519,8 +524,10 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 10px 22px 14px;
+            padding: 10px 22px 20px;
             border-top: 1px solid var(--border-subtle);
+            flex-shrink: 0;
+            background: var(--bg-primary);
         }
 
         .footer-left {
@@ -583,6 +590,7 @@
     </div>
 
     <div class="task-grid" id="taskGrid">
+        <!-- 动态内容 -->
         <div class="empty-state">
             <div class="empty-graphic">🛡</div>
             <div class="empty-title">加载中...</div>
@@ -664,13 +672,13 @@
 
         function updateWindowSize(count) {
             try {
-                // Header: 64px (approx) + padding
-                // Footer: 55px (approx)
+                // Header: 68px
+                // Footer: 50px + 6px extra padding from 20px bottom = ~56? 
                 // Grid Padding: 22px
                 // Gap: 10px
                 // Card: 100px
                 const HEADER_H = 68;
-                const FOOTER_H = 50;
+                const FOOTER_H = 56; // Adjusted for padding
                 const GRID_PAD = 22;
                 const GAP = 10;
                 const CARD_H = 100;
@@ -686,7 +694,7 @@
 
                 // 限制最大高度 650，超过则内部滚动
                 const winH = Math.min(Math.max(contentH + 5, 200), 650);
-                pywebview.api.resize_window(660, winH); // 宽度稍增适配
+                pywebview.api.resize_window(660, winH);
             } catch (e) { }
         }
 
@@ -703,19 +711,6 @@
                 refresh();
             } catch (e) { }
         }
-
-        /* autoResize 已废弃 */
-        /*
-        function autoResize() {
-            try {
-                // 计算实际内容高度 (header + grid + footer)
-                const contentHeight = document.body.scrollHeight;
-                // 限制窗口高度在 200 ~ 600 之间
-                const winH = Math.min(Math.max(contentHeight, 200), 600);
-                pywebview.api.resize_window(640, winH);
-            } catch (e) { }
-        }
-        */
 
         async function openLogs() {
             try { await pywebview.api.open_logs(); } catch (e) { }
