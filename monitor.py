@@ -26,7 +26,7 @@ RATE_IDLE_SECONDS = 5         # 速率检测: 从高速输出→停止 后 5 秒
 RATE_HIGH_THRESHOLD = 200     # 字节/秒: 超过此值视为 "正在回复" (文本流)
 RATE_HISTORY_SIZE = 30        # 保留最近 N 个采样点 (默认 2秒刷新, 博 60 秒历史)
 SIGNAL_FILE = os.path.join(DEFAULT_LOG_DIR, "_claude_idle_signal")  # Claude Hook 信号文件
-SIGNAL_MAX_AGE = 15           # 信号文件有效期 (秒)
+SIGNAL_MAX_AGE = 3600         # 信号文件有效期 (秒) - 延长至 1 小时以支持 Signal Timestamp Latching
 
 # 状态正则匹配规则 (根据你的工具习惯调整)
 WAIT_PATTERNS = [
@@ -247,16 +247,17 @@ def analyze_log(filepath):
     分析日志文件以确定任务状态。
 
     Returns:
-        (status, message, exit_code, duration)
+        (status, message, exit_code, duration, signal_ts)
         status:    "RUNNING" | "WAITING" | "IDLE" | "DONE"
         message:   最新输出内容摘要
         exit_code: 退出码 (仅 DONE 状态有效, 否则 -1)
         duration:  耗时字符串 (仅 DONE 状态有效)
+        signal_ts: 信号文件时间戳 (仅 Signal IDLE 有效, 否则 0)
     """
     lines = tail_read(filepath)
 
     if not lines:
-        return "RUNNING", "初始化...", -1, ""
+        return "RUNNING", "初始化...", -1, "", 0
 
     # 解析起始信息
     tool_name, start_time = parse_start_info(filepath)
@@ -266,7 +267,7 @@ def analyze_log(filepath):
     if is_done:
         duration = calculate_duration(start_time, end_time)
         clear_rate_history(filepath)
-        return "DONE", "任务完成", exit_code, duration
+        return "DONE", "任务完成", exit_code, duration, 0
 
     # ── 层 0: Claude Hook 信号文件检测 (即时, 0 延迟) ──
     # 如果是 claude 任务, 且信号文件存在且新鲜, 立即判定 IDLE
@@ -276,12 +277,10 @@ def analyze_log(filepath):
             signal_mtime = os.path.getmtime(SIGNAL_FILE)
             log_mtime = os.path.getmtime(filepath)
             age = time.time() - signal_mtime
-            # 条件 1: 信号必须新鲜 (15 秒内)
-            # 条件 2: 信号时间 >= 日志最后写入时间 (信号在日志停止后产生)
-            # 条件 3: 日志当前不在活跃写入中 (日志也静止了至少 1 秒)
-            log_idle = time.time() - log_mtime
-            if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 2 and log_idle > 1:
-                return "IDLE", "AI 已完成回复", -1, ""
+            # 条件 1: 信号必须新鲜 (1 小时内)
+            # 条件 2: 信号时间 >= 日志最后写入时间 - 5s (容许少量后续日志/用户输入更新)
+            if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 5:
+                return "IDLE", "AI 已完成回复", -1, "", signal_mtime
         except Exception:
             pass
 
@@ -311,13 +310,13 @@ def analyze_log(filepath):
                 stripped = line.strip()
                 stripped = re.sub(r'[\x00-\x1f\x7f]', '', stripped)
                 if re.search(pattern, stripped, re.IGNORECASE):
-                    return "WAITING", stripped[:60], -1, ""
-            return "WAITING", last_line[:60], -1, ""
+                    return "WAITING", stripped[:60], -1, "", 0
+            return "WAITING", last_line[:60], -1, "", 0
 
     # 构建工具完成特征 (gradle/mvn): 匹配到即刻判定 IDLE
     for pattern, msg in BUILD_DONE_PATTERNS:
         if re.search(pattern, context, re.IGNORECASE):
-            return "IDLE", msg, -1, ""
+            return "IDLE", msg, -1, "", 0
 
     # AI 工具特征匹配: 检查是否出现空闲特征 (零延迟)
     # 策略: 比较 IDLE_PATTERNS 和 BUSY_PATTERNS 在尾部的最后出现位置
@@ -334,14 +333,14 @@ def analyze_log(filepath):
                 last_busy_pos = max(last_busy_pos, m.end())
 
         if last_idle_pos > last_busy_pos:
-            return "IDLE", "等待输入", -1, ""
+            return "IDLE", "等待输入", -1, "", 0
 
     # ── 输出速率检测 (最高优先级) ──
     # 不依赖文本特征, 通过文件大小变化速率检测:
     #   高速(>200B/s) → 静止(5秒) = "从回复中停下来了"
     was_fast, is_stalled, stall_secs = track_file_rate(filepath)
     if was_fast and is_stalled and stall_secs >= RATE_IDLE_SECONDS:
-        return "IDLE", "AI 已完成回复", -1, ""
+        return "IDLE", "AI 已完成回复", -1, "", 0
 
     # ── 后忙碌快速检测 (备用) ──
     # 场景: BUSY 特征消失但提示符未出现, 且速率检测未触发 (如回复太短)
@@ -357,16 +356,16 @@ def analyze_log(filepath):
             broad_lines = lines[-30:] if len(lines) >= 30 else lines
             broad_context = "".join([strip_ansi(l) for l in broad_lines])
             if any(re.search(p, broad_context, re.IGNORECASE) for p in BUSY_PATTERNS):
-                return "IDLE", "AI 已完成回复", -1, ""
+                return "IDLE", "AI 已完成回复", -1, "", 0
 
         # 通用兜底: 60 秒无输出
         if idle_seconds > IDLE_THRESHOLD_SECONDS:
-            return "IDLE", "等待输入", -1, ""
+            return "IDLE", "等待输入", -1, "", 0
     except Exception:
         pass
 
     # 默认: 运行中
-    return "RUNNING", last_line[:60], -1, ""
+    return "RUNNING", last_line[:60], -1, "", 0
 
 
 def clear_screen():
@@ -416,7 +415,8 @@ def render_dashboard(log_dir, max_tasks, enable_sound):
         has_waiting = False
         for log_file in active_logs:
             tool_name, _ = parse_start_info(log_file)
-            status, msg, exit_code, duration = analyze_log(log_file)
+            # ADAPTED FOR 5 RETURNS
+            status, msg, exit_code, duration, _ = analyze_log(log_file)
 
             if status == "WAITING":
                 has_waiting = True
@@ -478,7 +478,7 @@ def main():
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
         print(f"已创建日志目录: {log_dir}")
-
+    
     print(f"🛡️  监控已启动 | 日志目录: {log_dir} | 刷新: {args.refresh}s")
     print(f"   按 Ctrl+C 退出\n")
     time.sleep(1)

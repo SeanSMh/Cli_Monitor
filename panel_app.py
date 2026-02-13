@@ -369,7 +369,10 @@ def setup_statusbar_from_thread():
 
 class Api:
     def __init__(self):
-        self._notified = set()
+        self._last_notify_time = {}  # Key: "filepath:status" -> timestamp
+        self._last_signal_ts = {}    # Key: log_file -> last_notified_signal_ts
+        self._task_states = {}       # Key: log_file -> last_status
+        self._first_run = True       # 启动时不通知
 
     def get_tasks(self):
         if not os.path.exists(LOG_DIR):
@@ -383,7 +386,29 @@ class Api:
 
         for log_file in log_files[:MAX_TASKS]:
             tool_name, start_time = parse_start_info(log_file)
-            status, msg, exit_code, duration = analyze_log(log_file)
+            
+            # 接收 5 个返回值
+            status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
+
+            # 实时进程检测: 如果状态不是 DONE, 检查进程是否存活
+            if status != "DONE":
+                try:
+                    basename = os.path.basename(log_file)
+                    parts = basename.rsplit('_', 3) # [tool, timestamp, pid, random.log]
+                    if len(parts) >= 3:
+                        pid = int(parts[2])
+                        try:
+                            os.kill(pid, 0)
+                        except OSError:
+                            # 进程不存在 -> 强制标记为异常结束
+                            status = "DONE"
+                            exit_code = 137 # SIGKILL
+                            msg = "[进程已终止]"
+                            duration = calculate_duration(start_time, time.time())
+                            # 顺便清理一下速率历史
+                            clear_rate_history(log_file)
+                except Exception:
+                    pass
 
             msg = re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", msg)
             msg = re.sub(r"[\x00-\x1f\x7f]", "", msg)
@@ -401,6 +426,7 @@ class Api:
                     "exit_code": exit_code,
                     "duration": duration,
                     "log_file": log_file,
+                    "signal_ts": signal_ts, # Pass signal_ts to frontend logic
                 }
             )
 
@@ -410,27 +436,66 @@ class Api:
         return tasks
 
     def _check_notifications(self, tasks):
-        current = set()
+        now = time.time()
+        
+        # 首次运行: 仅初始化状态, 不发通知
+        if self._first_run:
+            for task in tasks:
+                self._task_states[task["log_file"]] = task["status"]
+                # 记录初始信号时间戳，避免启动时重复通知
+                if task.get("signal_ts", 0) > 0:
+                    self._last_signal_ts[task["log_file"]] = task["signal_ts"]
+            self._first_run = False
+            return
+
         for task in tasks:
-            if task["status"] == "WAITING":
-                key = task["log_file"] + ":WAITING"
-                current.add(key)
-                if key not in self._notified:
-                    send_notification(
-                        "⚠️ CLI 任务待确认",
-                        f"工具: {task['tool']}",
-                        task["message"][:60],
-                    )
-            elif task["status"] == "IDLE":
-                key = task["log_file"] + ":IDLE"
-                current.add(key)
-                if key not in self._notified:
-                    send_notification(
-                        "🔵 AI 已完成，等待输入",
-                        f"工具: {task['tool']}",
-                        "AI 已完成回复，等待你的下一步指令",
-                    )
-        self._notified = current
+            log_file = task["log_file"]
+            status = task["status"]
+            prev_status = self._task_states.get(log_file)
+            signal_ts = task.get("signal_ts", 0)
+            
+            # 更新状态记录
+            self._task_states[log_file] = status
+
+            if status == "WAITING":
+                # WAITING 仍使用 Edge Trigger + Debounce
+                if status == prev_status: continue
+                
+                key = f"{log_file}:WAITING"
+                if now - self._last_notify_time.get(key, 0) < 5: continue
+
+                send_notification("⚠️ CLI 任务待确认", f"工具: {task['tool']}", task["message"][:60])
+                self._last_notify_time[key] = now
+            
+            elif status == "IDLE":
+                # IDLE 使用 Signal Timestamp 去重逻辑
+                if signal_ts > 0:
+                    # 拥有有效信号 (来自 Hook)
+                    last_ts = self._last_signal_ts.get(log_file, 0)
+                    if signal_ts > last_ts:
+                        # 这是一个新的完成信号 -> 通知
+                        send_notification("🔵 AI 已完成，等待输入", f"工具: {task['tool']}", "AI 已完成回复，等待你的下一步指令")
+                        self._last_signal_ts[log_file] = signal_ts
+                        # 同时更新 notify time 用于 debounce 兼容
+                        self._last_notify_time[f"{log_file}:IDLE"] = now
+                    else:
+                        # 信号时间戳未变 -> 说明是同一个完成事件 -> 忽略
+                        pass
+                else:
+                    # 无信号 (纯 Regex/Rate 检测)
+                    # 对于 Claude: 如果 Hook 没触发 (signal_ts=0), 我们假设这是用户输入/Prompt匹配
+                    # 我们不仅不通知，甚至可能想忽略它。
+                    # 但为了安全，如果工具是 Claude, 且没有信号，我们 *跳过通知*
+                    if task["tool"] == "claude":
+                        continue 
+
+                    # 对于其他工具 (e.g. mvn/gradle): 使用 Edge Trigger
+                    if status == prev_status: continue
+                    key = f"{log_file}:IDLE"
+                    if now - self._last_notify_time.get(key, 0) < 5: continue
+
+                    send_notification("🔵 任务已完成", f"工具: {task['tool']}", task["message"][:60])
+                    self._last_notify_time[key] = now
 
     def open_logs(self):
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -482,10 +547,62 @@ def on_closing():
 # ===========================================
 
 
+def cleanup_stale_logs():
+    """启动时清理旧日志: 删除已完成(DONE)的任务, 以及僵尸进程(进程已死但日志未结束)"""
+    _log("开始清理旧日志...")
+    count = 0
+    now = time.time()
+    for log_file in glob.glob(os.path.join(LOG_DIR, "*.log")):
+        try:
+            # 1. 清理超过 7 天的文件 (无论状态)
+            mtime = os.path.getmtime(log_file)
+            if now - mtime > 7 * 86400:
+                os.remove(log_file)
+                count += 1
+                continue
+
+            # ADAPTED FOR 5 RETURNS
+            status, _, _, _, _ = analyze_log(log_file)
+
+            # 2. 清理状态为 DONE 的任务
+            if status == "DONE":
+                os.remove(log_file)
+                clear_rate_history(log_file)
+                count += 1
+                continue
+
+            # 3. 清理僵尸任务 (状态非 DONE, 但进程已不存在)
+            # 文件名格式: tool_timestamp_pid_random.log
+            # 倒序解析: [tool..., timestamp, pid, random.log]
+            try:
+                basename = os.path.basename(log_file)
+                parts = basename.rsplit('_', 3) # ['tool_part', 'timestamp', 'pid', 'random.log']
+                if len(parts) >= 3:
+                    pid_str = parts[2]
+                    pid = int(pid_str)
+                    
+                    # 检查进程是否存在
+                    try:
+                        os.kill(pid, 0) # 发送信号 0 检测进程
+                    except OSError:
+                        # 进程不存在 -> 僵尸任务
+                        _log(f"发现僵尸任务 (PID {pid} 不存在): {basename}")
+                        os.remove(log_file)
+                        clear_rate_history(log_file)
+                        count += 1
+            except (ValueError, IndexError):
+                pass
+
+        except Exception as e:
+            _log(f"清理失败 {log_file}: {e}")
+    _log(f"清理完成, 删除了 {count} 个旧文件")
+
+
 def main():
     global _window
     _log("main() 开始")
     os.makedirs(LOG_DIR, exist_ok=True)
+    cleanup_stale_logs()  # <--- 启动时清理
 
     inject_shell_wrapper()
     inject_claude_hooks()

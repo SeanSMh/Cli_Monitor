@@ -99,13 +99,15 @@
             --shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
         }
 
+        html {
+            background: var(--bg-primary);
+            /* 确保 autoResize 缩小时背景色一致 */
+        }
+
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
             overflow: hidden;
             user-select: none;
             -webkit-user-select: none;
@@ -211,6 +213,8 @@
 
         /* ===== 任务卡片 ===== */
         .task-card {
+            height: 100px;
+            /* 固定高度 */
             background: var(--bg-card);
             border-radius: var(--radius);
             padding: 14px 16px;
@@ -653,8 +657,37 @@
         </div>`;
             }).join('');
 
+
             // 自适应窗口高度
-            requestAnimationFrame(autoResize);
+            updateWindowSize(tasks.length);
+        }
+
+        function updateWindowSize(count) {
+            try {
+                // Header: 64px (approx) + padding
+                // Footer: 55px (approx)
+                // Grid Padding: 22px
+                // Gap: 10px
+                // Card: 100px
+                const HEADER_H = 68;
+                const FOOTER_H = 50;
+                const GRID_PAD = 22;
+                const GAP = 10;
+                const CARD_H = 100;
+
+                const rows = Math.ceil(count / 2);
+                let contentH = 0;
+
+                if (count === 0) {
+                    contentH = HEADER_H + 200 + FOOTER_H; // 空状态预留高度
+                } else {
+                    contentH = HEADER_H + GRID_PAD + (rows * CARD_H) + ((rows - 1) * GAP) + FOOTER_H;
+                }
+
+                // 限制最大高度 650，超过则内部滚动
+                const winH = Math.min(Math.max(contentH + 5, 200), 650);
+                pywebview.api.resize_window(660, winH); // 宽度稍增适配
+            } catch (e) { }
         }
 
         async function refresh() {
@@ -671,12 +704,18 @@
             } catch (e) { }
         }
 
+        /* autoResize 已废弃 */
+        /*
         function autoResize() {
             try {
-                const h = Math.min(Math.max(document.body.scrollHeight, 200), 600);
-                pywebview.api.resize_window(640, h);
+                // 计算实际内容高度 (header + grid + footer)
+                const contentHeight = document.body.scrollHeight;
+                // 限制窗口高度在 200 ~ 600 之间
+                const winH = Math.min(Math.max(contentHeight, 200), 600);
+                pywebview.api.resize_window(640, winH);
             } catch (e) { }
         }
+        */
 
         async function openLogs() {
             try { await pywebview.api.open_logs(); } catch (e) { }
