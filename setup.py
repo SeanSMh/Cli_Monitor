@@ -8,22 +8,29 @@ CLI Monitor — py2app 打包配置
 
 from setuptools import setup
 
-APP = ["menubar_app.py"]
-DATA_FILES = []
+APP = ["panel_app.py"]
+DATA_FILES = [
+    "panel.html",
+    ("shell", ["shell/cli_monitor.sh"])
+]
 
 OPTIONS = {
     "argv_emulation": False,
     "plist": {
         "CFBundleName": "CLI Monitor",
         "CFBundleDisplayName": "CLI Monitor",
-        "CFBundleIdentifier": "com.cli-monitor.menubar",
-        "CFBundleVersion": "1.0.0",
-        "CFBundleShortVersionString": "1.0.0",
-        "LSUIElement": True,  # 不在 Dock 中显示图标 (纯状态栏应用)
-        "NSHumanReadableCopyright": "CLI Monitor - 终端任务状态监控",
+        "CFBundleIdentifier": "com.cli-monitor.panel",
+        "CFBundleVersion": "2.0.0",
+        "CFBundleShortVersionString": "2.0.0",
+        "LSUIElement": True,  # Keep as UI element (or False if we want Dock icon, but panel_app handles status bar)
+        # panel_app uses NSStatusBar so LSUIElement=True is appropriate to hide Dock icon if desired, 
+        # but pywebview might need Dock icon for window?
+        # panel_app.py docstring says "Click status bar icon to toggle panel". 
+        # Usually these apps hide from Dock. Let's keep LSUIElement=True.
+        "NSHumanReadableCopyright": "CLI Monitor v2.0",
     },
-    "includes": ["rumps", "monitor"],
-    "packages": [],
+    "includes": ["webview", "monitor", "watchdog", "config_loader", "AppKit", "Foundation", "objc"],
+    "packages": ["watchdog"],
 }
 
 setup(

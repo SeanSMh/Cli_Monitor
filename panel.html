@@ -115,6 +115,103 @@
             display: flex;
             flex-direction: column;
             height: 100vh;
+            padding: 20px 22px;
+            gap: 12px;
+            position: relative;
+            isolation: isolate;
+        }
+
+        body::before {
+            content: '';
+            position: absolute;
+            inset: -20% -30%;
+            pointer-events: none;
+            opacity: 0;
+            background: linear-gradient(110deg,
+                    transparent 30%,
+                    rgba(255, 255, 255, 0.28) 50%,
+                    transparent 70%);
+            transform: translateX(-120%);
+            z-index: 20;
+        }
+
+        body::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            opacity: 0;
+            background: radial-gradient(circle at 88% 8%, rgba(96, 165, 250, 0.3), transparent 42%);
+            z-index: 19;
+        }
+
+        body.theme-switching::before {
+            animation: theme-sweep 0.56s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+
+        body.theme-switching::after {
+            animation: theme-overlay-fade 0.56s ease;
+        }
+
+        body.theme-switching,
+        body.theme-switching * {
+            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        body.theme-switching .header,
+        body.theme-switching .task-grid,
+        body.theme-switching .footer {
+            animation: theme-content-swap 0.62s ease;
+        }
+
+        @keyframes theme-sweep {
+            0% {
+                opacity: 0;
+                transform: translateX(-120%);
+            }
+
+            20% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0;
+                transform: translateX(120%);
+            }
+        }
+
+        @keyframes theme-overlay-fade {
+            0% {
+                opacity: 0;
+            }
+
+            45% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0;
+            }
+        }
+
+        @keyframes theme-content-swap {
+            0% {
+                opacity: 1;
+                filter: blur(0px);
+                transform: translateY(0);
+            }
+
+            42% {
+                opacity: 0.35;
+                filter: blur(2px);
+                transform: translateY(1px);
+            }
+
+            100% {
+                opacity: 1;
+                filter: blur(0px);
+                transform: translateY(0);
+            }
         }
 
         /* ===== 顶部标题栏 ===== */
@@ -122,7 +219,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 18px 22px 10px;
+            padding: 0;
             -webkit-app-region: drag;
             flex-shrink: 0;
         }
@@ -161,7 +258,7 @@
 
         .header-actions {
             display: flex;
-            gap: 4px;
+            gap: 12px;
             -webkit-app-region: no-drag;
         }
 
@@ -191,15 +288,35 @@
             transform: scale(0.95);
         }
 
+        .btn-icon.spinning .refresh-icon {
+            animation: refresh-spin 0.55s linear;
+        }
+
+        .refresh-icon {
+            display: inline-block;
+            line-height: 1;
+        }
+
+        @keyframes refresh-spin {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
         /* ===== 任务网格 ===== */
         .task-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
-            padding: 8px 22px 14px;
+            padding: 20px 0;
             overflow-y: auto;
             flex: 1;
             min-height: 0;
+            align-content: start;
         }
 
         .task-grid::-webkit-scrollbar {
@@ -230,7 +347,7 @@
             display: flex;
             align-items: center;
             gap: 10px;
-            cursor: default;
+            cursor: pointer;
             user-select: none;
         }
 
@@ -524,7 +641,7 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 10px 22px 20px;
+            padding-top: 10px;
             border-top: 1px solid var(--border-subtle);
             flex-shrink: 0;
             background: var(--bg-primary);
@@ -570,6 +687,15 @@
             background: var(--rose-bg);
             color: var(--rose);
         }
+
+        .btn.icon-only {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            justify-content: center;
+            gap: 0;
+            font-size: 14px;
+        }
     </style>
 </head>
 
@@ -585,7 +711,7 @@
         </div>
         <div class="header-actions">
             <button class="btn-icon" onclick="toggleTheme()" title="切换主题" id="themeBtn">🌙</button>
-            <button class="btn-icon" onclick="refresh()" title="刷新">↻</button>
+            <button class="btn-icon" onclick="manualRefresh()" title="刷新" id="refreshBtn"><span class="refresh-icon">↻</span></button>
         </div>
     </div>
 
@@ -599,11 +725,9 @@
 
     <div class="footer">
         <div class="footer-left">
-            <button class="btn" onclick="refresh()">↻ 刷新</button>
-            <button class="btn" onclick="clearDone()">🗑 清除已完成</button>
-            <button class="btn" onclick="openLogs()">📂 日志</button>
+            <button class="btn icon-only" onclick="clearDone()" title="清除已完成">🗑</button>
         </div>
-        <button class="btn quit" onclick="quit()">⏻ 退出</button>
+        <button class="btn quit icon-only" onclick="quit()" title="退出">⏻</button>
     </div>
 
     <script>
@@ -634,13 +758,14 @@
             const sub = document.getElementById('subtitle');
 
             if (!tasks || tasks.length === 0) {
-                sub.textContent = '暂无活跃任务';
+                sub.textContent = '';
                 grid.innerHTML = `
         <div class="empty-state">
           <div class="empty-graphic">🛡</div>
           <div class="empty-title">暂无活跃任务</div>
           <div class="empty-sub">在终端中运行 codex、claude 等命令<br>即可自动开始监控</div>
         </div>`;
+                requestAnimationFrame(() => updateWindowSize(0));
                 return;
             }
 
@@ -650,8 +775,9 @@
             grid.innerHTML = tasks.map(t => {
                 const cls = getCardClass(t);
                 const info = getInfoText(t);
+                const safeLogFile = t.log_file.replace(/'/g, "\\'");
                 return `
-        <div class="task-card ${cls}">
+        <div class="task-card ${cls}" onclick="openTask('${safeLogFile}')">
           <div class="status-dot ${cls}"></div>
           <div class="card-body">
             <div class="tool-name">${t.tool}</div>
@@ -659,7 +785,7 @@
           </div>
           <div class="card-right">
             <span class="card-badge ${cls}">${getBadgeText(t)}</span>
-            <button class="btn-delete" onclick="deleteTask('${t.log_file.replace(/'/g, "\\'")}')"
+            <button class="btn-delete" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
                     title="删除任务">×</button>
           </div>
         </div>`;
@@ -667,34 +793,58 @@
 
 
             // 自适应窗口高度
-            updateWindowSize(tasks.length);
+            requestAnimationFrame(() => updateWindowSize(tasks.length));
         }
 
         function updateWindowSize(count) {
             try {
-                // Header: 68px
-                // Footer: 50px + 6px extra padding from 20px bottom = ~56? 
-                // Grid Padding: 22px
-                // Gap: 10px
-                // Card: 100px
-                const HEADER_H = 68;
-                const FOOTER_H = 56; // Adjusted for padding
-                const GRID_PAD = 22;
-                const GAP = 10;
-                const CARD_H = 100;
+                const header = document.querySelector('.header');
+                const footer = document.querySelector('.footer');
+                const grid = document.getElementById('taskGrid');
+                const body = document.body;
 
-                const rows = Math.ceil(count / 2);
-                let contentH = 0;
+                const headerH = header ? header.offsetHeight : 0;
+                const footerH = footer ? footer.offsetHeight : 0;
+                const gridStyle = grid ? getComputedStyle(grid) : null;
+                const bodyStyle = body ? getComputedStyle(body) : null;
 
-                if (count === 0) {
-                    contentH = HEADER_H + 200 + FOOTER_H; // 空状态预留高度
+                const gridPadTop = gridStyle ? parseFloat(gridStyle.paddingTop) || 0 : 0;
+                const gridPadBottom = gridStyle ? parseFloat(gridStyle.paddingBottom) || 0 : 0;
+                const rowGap = gridStyle
+                    ? (parseFloat(gridStyle.rowGap) || parseFloat(gridStyle.gap) || 10)
+                    : 10;
+
+                const bodyPadTop = bodyStyle ? parseFloat(bodyStyle.paddingTop) || 0 : 0;
+                const bodyPadBottom = bodyStyle ? parseFloat(bodyStyle.paddingBottom) || 0 : 0;
+                const bodyGap = bodyStyle ? parseFloat(bodyStyle.rowGap) || parseFloat(bodyStyle.gap) || 0 : 0;
+
+                let gridContentH = 0;
+                if (count <= 0) {
+                    const emptyState = grid ? grid.querySelector('.empty-state') : null;
+                    const emptyH = emptyState ? emptyState.offsetHeight : 200;
+                    gridContentH = emptyH + gridPadTop + gridPadBottom;
                 } else {
-                    contentH = HEADER_H + GRID_PAD + (rows * CARD_H) + ((rows - 1) * GAP) + FOOTER_H;
+                    const rows = Math.ceil(count / 2);
+                    const firstCard = grid ? grid.querySelector('.task-card') : null;
+                    const cardH = firstCard ? firstCard.offsetHeight : 100;
+                    gridContentH = (rows * cardH) + ((rows - 1) * rowGap) + gridPadTop + gridPadBottom;
                 }
 
-                // 限制最大高度 650，超过则内部滚动
-                const winH = Math.min(Math.max(contentH + 5, 200), 650);
-                pywebview.api.resize_window(660, winH);
+                const WINDOW_FRAME_EXTRA = 36;
+                const MIN_WIN_H = 320;
+                const MAX_WIN_H = 650;
+
+                const targetH =
+                    bodyPadTop +
+                    headerH +
+                    bodyGap +
+                    gridContentH +
+                    bodyGap +
+                    footerH +
+                    bodyPadBottom +
+                    WINDOW_FRAME_EXTRA;
+                const winH = Math.min(Math.max(targetH, MIN_WIN_H), MAX_WIN_H);
+                pywebview.api.resize_window(660, Math.round(winH));
             } catch (e) { }
         }
 
@@ -705,6 +855,17 @@
             } catch (e) { console.error('刷新失败:', e); }
         }
 
+        function manualRefresh() {
+            const btn = document.getElementById('refreshBtn');
+            if (btn) {
+                btn.classList.remove('spinning');
+                void btn.offsetWidth;
+                btn.classList.add('spinning');
+                setTimeout(() => btn.classList.remove('spinning'), 600);
+            }
+            refresh();
+        }
+
         async function deleteTask(logFile) {
             try {
                 await pywebview.api.delete_task(logFile);
@@ -712,8 +873,10 @@
             } catch (e) { }
         }
 
-        async function openLogs() {
-            try { await pywebview.api.open_logs(); } catch (e) { }
+        async function openTask(logFile) {
+            try {
+                await pywebview.api.focus_task(logFile);
+            } catch (e) { }
         }
 
         async function quit() {
@@ -733,11 +896,22 @@
         }
 
         function toggleTheme() {
+            const body = document.body;
+            if (body.classList.contains('theme-switching')) return;
+
+            body.classList.add('theme-switching');
+
             const html = document.documentElement;
             const next = html.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
-            html.setAttribute('data-theme', next === 'dark' ? '' : 'light');
-            document.getElementById('themeBtn').textContent = next === 'light' ? '☀️' : '🌙';
-            localStorage.setItem('cli-monitor-theme', next);
+
+            // 先播放切换过渡，再应用主题，让“切换过程”更明确。
+            setTimeout(() => {
+                html.setAttribute('data-theme', next === 'dark' ? '' : 'light');
+                document.getElementById('themeBtn').textContent = next === 'light' ? '☀️' : '🌙';
+                localStorage.setItem('cli-monitor-theme', next);
+            }, 260);
+
+            setTimeout(() => body.classList.remove('theme-switching'), 620);
         }
 
         function initTheme() {

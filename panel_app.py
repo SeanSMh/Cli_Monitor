@@ -89,6 +89,8 @@ _window = None
 _window_visible = True
 _status_item = None
 _sb_delegate = None
+_resize_delegate = None
+_api = None
 
 
 # ===========================================
@@ -284,18 +286,107 @@ def send_notification(title, subtitle, message):
         pass
 
 
+def _extract_pid_from_log_file(log_file):
+    """从日志文件名中提取 shell PID: tool_timestamp_pid_random.log"""
+    try:
+        basename = os.path.basename(log_file)
+        parts = basename.rsplit("_", 3)
+        if len(parts) >= 3:
+            return int(parts[2])
+    except Exception:
+        pass
+    return None
+
+
+def _get_tty_from_pid(pid):
+    """读取进程所在 TTY，如 /dev/ttys008"""
+    try:
+        res = subprocess.run(
+            ["ps", "-o", "tty=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        tty = res.stdout.strip()
+        if not tty or tty == "?":
+            return ""
+        if not tty.startswith("/dev/"):
+            tty = f"/dev/{tty}"
+        return tty
+    except Exception:
+        return ""
+
+
+def _run_osascript(script):
+    try:
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return res.returncode == 0 and res.stdout.strip().lower() == "true"
+    except Exception:
+        return False
+
+
+def _focus_terminal_by_tty(tty):
+    """根据 tty 激活对应终端 tab/session，优先 iTerm2，其次 Terminal。"""
+    tty_short = tty.replace("/dev/", "", 1)
+
+    script_iterm2 = f'''
+tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if tty of s is "{tty}" or tty of s is "{tty_short}" then
+                    set current tab of w to t
+                    set current session of t to s
+                    activate
+                    return true
+                end if
+            end repeat
+        end repeat
+    end repeat
+    return false
+end tell
+'''.strip()
+
+    script_terminal = f'''
+tell application "Terminal"
+    repeat with w in windows
+        repeat with t in tabs of w
+            if tty of t is "{tty}" or tty of t is "{tty_short}" then
+                set selected tab of w to t
+                set index of w to 1
+                activate
+                return true
+            end if
+        end repeat
+    end repeat
+    return false
+end tell
+'''.strip()
+
+    return _run_osascript(script_iterm2) or _run_osascript(script_terminal)
+
+
 # ===========================================
 # macOS 状态栏图标
 # ===========================================
 
 
-def update_status_icon(has_alert):
+def update_status_icon(alert_count):
     """更新状态栏图标"""
-    if _status_item:
-        try:
-            _status_item.button().setTitle_("⚠️" if has_alert else "🛡️")
-        except Exception:
-            pass
+    try:
+        if HAS_APPKIT and _sb_delegate:
+            _sb_delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "doSetStatusIcon:", str(max(0, int(alert_count))), False
+            )
+            return
+        _do_update_status_icon(alert_count)
+    except Exception:
+        pass
 
 
 if HAS_APPKIT:
@@ -305,7 +396,7 @@ if HAS_APPKIT:
 
         @objc.python_method
         def toggle_panel(self):
-            global _window_visible
+            global _window_visible, _api
             if _window is None:
                 return
             if _window_visible:
@@ -314,6 +405,9 @@ if HAS_APPKIT:
             else:
                 _window.show()
                 _window_visible = True
+                # 从状态栏打开面板时，未读通知计数清零
+                if _api is not None:
+                    _api.clear_unread_notifications()
 
         def statusBarClicked_(self, sender):
             self.toggle_panel()
@@ -321,6 +415,25 @@ if HAS_APPKIT:
         def doSetupStatusBar_(self, _):
             """ObjC selector: 在主线程上执行状态栏创建"""
             _do_setup_statusbar()
+
+        def doSetStatusIcon_(self, payload):
+            """ObjC selector: 在主线程上更新状态栏图标"""
+            try:
+                _do_update_status_icon(int(str(payload)))
+            except Exception:
+                _do_update_status_icon(0)
+
+
+    class ResizeDelegate(NSObject):
+        """窗口尺寸调整代理 (确保在主线程执行)"""
+
+        def doResize_(self, payload):
+            try:
+                text = str(payload)
+                w_str, h_str = text.split(",", 1)
+                _do_resize_window(int(w_str), int(h_str))
+            except Exception as e:
+                _log(f"窗口调整失败: {e}")
 
 
 def _do_setup_statusbar():
@@ -345,6 +458,24 @@ def _do_setup_statusbar():
     print("[CLI Monitor] ✅ 状态栏图标已创建 (主线程)")
 
 
+def _do_update_status_icon(alert_count):
+    """实际更新状态栏图标 (仅在主线程调用)"""
+    if _status_item:
+        try:
+            count = max(0, int(alert_count))
+        except Exception:
+            count = 0
+        _status_item.button().setTitle_(f"⚠️{count}" if count > 0 else "🛡️")
+
+
+def _do_resize_window(width, height):
+    """实际执行窗口尺寸调整 (必须在主线程调用)"""
+    global _window
+    if _window is None:
+        return
+    _window.resize(int(width), int(height))
+
+
 def setup_statusbar_from_thread():
     """
     从后台线程安全地调度状态栏创建到主线程。
@@ -362,6 +493,14 @@ def setup_statusbar_from_thread():
     print("[CLI Monitor] ✅ 状态栏调度完成")
 
 
+def setup_resize_delegate():
+    global _resize_delegate
+    if not HAS_APPKIT:
+        return
+    if _resize_delegate is None:
+        _resize_delegate = ResizeDelegate.alloc().init()
+
+
 # ===========================================
 # pywebview JS API
 # ===========================================
@@ -373,6 +512,7 @@ class Api:
         self._last_signal_ts = {}    # Key: log_file -> last_notified_signal_ts
         self._task_states = {}       # Key: log_file -> last_status
         self._first_run = True       # 启动时不通知
+        self._unread_notification_count = 0  # 未读通知数 (用于状态栏角标)
 
     def get_tasks(self):
         if not os.path.exists(LOG_DIR):
@@ -382,14 +522,26 @@ class Api:
         log_files.sort(key=os.path.getmtime, reverse=True)
 
         tasks = []
-        has_alert = False
 
         for log_file in log_files[:MAX_TASKS]:
-            tool_name, start_time = parse_start_info(log_file)
+            # 接收 6 个返回值 (v2.0 New Signature)
+            # tool_name, status, msg, exit_code, duration, signal_ts
+            tool_name, status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
             
-            # 接收 5 个返回值
-            status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
-
+            # v2.0: parse_start_info 已被集成到 analyze_log 内部, 无需重复解析
+            # tool_name, start_time = parse_start_info(log_file) 
+            # 注意: calculate_duration 需要 start_time，但现在 analyze_log 内部已计算好 duration
+            # 如果是异常终止(kill)，我们需要 start_time 来重新计算 duration 吗？
+            # monitor.py 的 analyze_log 已经不再返回 start_time 了。
+            # 这是一个潜在问题。如果进程被 kill，status 会被这里覆盖为 DONE，但 duration 需要重算。
+            # 方案：monitor.py 的 analyze_log 已经处理了正常流程。
+            # 对于 kill 流程，monitor.py 无法感知。
+            # 为了保持逻辑简单，我们暂时 accept 如果 kill 掉，duration 可能不准或者为空。
+            # 或者，我们可以让 analyze_log 总是返回 start_time? 
+            # 不，为了性能，我们接受这个小瑕疵，或者再次 parse_start_info 仅在 kill 时?
+            # 让我们保留 parse_start_info 调用仅用于 kill 场景的 calculate_duration?
+            # 实际上，monitor.py 的 parse_start_info 也是读文件头。
+            
             # 实时进程检测: 如果状态不是 DONE, 检查进程是否存活
             if status != "DONE":
                 try:
@@ -398,13 +550,16 @@ class Api:
                     if len(parts) >= 3:
                         pid = int(parts[2])
                         try:
+                            # 只有当 PID 存在时才不做任何事
                             os.kill(pid, 0)
                         except OSError:
                             # 进程不存在 -> 强制标记为异常结束
                             status = "DONE"
                             exit_code = 137 # SIGKILL
                             msg = "[进程已终止]"
-                            duration = calculate_duration(start_time, time.time())
+                            # 重新读取 start_time 以计算 duration
+                            _, start_time = parse_start_info(log_file)
+                            duration = calculate_duration(start_time, time.strftime('%Y-%m-%d %H:%M:%S'))
                             # 顺便清理一下速率历史
                             clear_rate_history(log_file)
                 except Exception:
@@ -414,9 +569,6 @@ class Api:
             msg = re.sub(r"[\x00-\x1f\x7f]", "", msg)
             if len(msg) > 40:
                 msg = msg[:37] + "..."
-
-            if status in ("WAITING", "IDLE"):
-                has_alert = True
 
             tasks.append(
                 {
@@ -431,9 +583,13 @@ class Api:
             )
 
         self._check_notifications(tasks)
-        update_status_icon(has_alert)
+        update_status_icon(self._unread_notification_count)
 
         return tasks
+
+    def clear_unread_notifications(self):
+        self._unread_notification_count = 0
+        update_status_icon(0)
 
     def _check_notifications(self, tasks):
         now = time.time()
@@ -466,6 +622,7 @@ class Api:
 
                 send_notification("⚠️ CLI 任务待确认", f"工具: {task['tool']}", task["message"][:60])
                 self._last_notify_time[key] = now
+                self._unread_notification_count += 1
             
             elif status == "IDLE":
                 # IDLE 使用 Signal Timestamp 去重逻辑
@@ -478,6 +635,7 @@ class Api:
                         self._last_signal_ts[log_file] = signal_ts
                         # 同时更新 notify time 用于 debounce 兼容
                         self._last_notify_time[f"{log_file}:IDLE"] = now
+                        self._unread_notification_count += 1
                     else:
                         # 信号时间戳未变 -> 说明是同一个完成事件 -> 忽略
                         pass
@@ -496,6 +654,7 @@ class Api:
 
                     send_notification("🔵 任务已完成", f"工具: {task['tool']}", task["message"][:60])
                     self._last_notify_time[key] = now
+                    self._unread_notification_count += 1
 
     def open_logs(self):
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -511,13 +670,43 @@ class Api:
         except Exception:
             pass
 
+    def focus_task(self, log_file):
+        """定位到任务对应的终端会话。"""
+        try:
+            if not log_file or not log_file.startswith(LOG_DIR):
+                return False
+            pid = _extract_pid_from_log_file(log_file)
+            if not pid:
+                return False
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return False
+            tty = _get_tty_from_pid(pid)
+            if not tty:
+                return False
+            return _focus_terminal_by_tty(tty)
+        except Exception as e:
+            _log(f"focus_task 失败: {e}")
+            return False
+
     def resize_window(self, width, height):
         """自适应调整窗口高度"""
-        if _window:
-            try:
-                _window.resize(int(width), int(height))
-            except Exception:
-                pass
+        if not _window:
+            return
+        try:
+            w = int(width)
+            h = int(height)
+            if HAS_APPKIT:
+                setup_resize_delegate()
+                if _resize_delegate:
+                    _resize_delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "doResize:", f"{w},{h}", False
+                    )
+                    return
+            _do_resize_window(w, h)
+        except Exception as e:
+            _log(f"resize_window 调用失败: {e}")
 
     def quit_app(self):
         """真正退出"""
@@ -561,8 +750,8 @@ def cleanup_stale_logs():
                 count += 1
                 continue
 
-            # ADAPTED FOR 5 RETURNS
-            status, _, _, _, _ = analyze_log(log_file)
+            # analyze_log returns: tool_name, status, msg, exit_code, duration, signal_ts
+            _, status, _, _, _, _ = analyze_log(log_file)
 
             # 2. 清理状态为 DONE 的任务
             if status == "DONE":
@@ -599,7 +788,7 @@ def cleanup_stale_logs():
 
 
 def main():
-    global _window
+    global _window, _api
     _log("main() 开始")
     os.makedirs(LOG_DIR, exist_ok=True)
     cleanup_stale_logs()  # <--- 启动时清理
@@ -621,6 +810,7 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     api = Api()
+    _api = api
     _log(f"PANEL_HTML={PANEL_HTML} exists={os.path.exists(PANEL_HTML)}")
 
     _window = webview.create_window(
@@ -630,7 +820,7 @@ def main():
         width=640,
         height=460,
         resizable=True,
-        on_top=True,
+        on_top=False,
         frameless=False,
         easy_drag=True,
         background_color="#0F1118",

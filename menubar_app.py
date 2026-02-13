@@ -219,8 +219,10 @@ class CLIMonitorApp(rumps.App):
 
         tasks = []
         for log_file in log_files[:MAX_TASKS]:
-            tool_name, start_time = parse_start_info(log_file)
-            status, msg, exit_code, duration = analyze_log(log_file)
+            # tool_name, start_time = parse_start_info(log_file) # Integrated in analyze_log
+            
+            # v2.0 Signature: tool_name, status, msg, exit_code, duration, signal_ts
+            tool_name, status, msg, exit_code, duration, _ = analyze_log(log_file)
 
             # 清理控制字符
             msg = re.sub(r'\033\[[0-9;]*m', '', msg)
