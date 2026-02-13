@@ -45,13 +45,26 @@ WAIT_PATTERNS = [
 IDLE_PATTERNS = [
     r"\? for shortcuts",      # codex / claude 空闲提示符
     r"context left",          # codex 空闲底栏
+    r"gemini >\s*$",          # Gemini CLI 空闲提示符
 ]
 
 # AI 工具工作中特征 (表示 AI 正在生成/思考)
 BUSY_PATTERNS = [
     r"esc to interrupt",      # codex / claude 正在生成
     r"Working\(",             # codex 正在工作
-    r"Thinking",              # claude 思考中
+    r"Thinking",              # claude / gemini 思考中
+    r"Generating",            # gemini 生成中
+    r"\u2580",                 # gemini 动画 spinner (block char)
+]
+
+# 构建工具完成特征 (匹配到即刻判定 IDLE, 并附带成功/失败信息)
+BUILD_DONE_PATTERNS = [
+    # gradle
+    (r"BUILD SUCCESSFUL",     "✅ 构建成功"),
+    (r"BUILD FAILED",         "❌ 构建失败"),
+    # maven
+    (r"BUILD SUCCESS",        "✅ 构建成功"),
+    (r"BUILD FAILURE",        "❌ 构建失败"),
 ]
 
 # ANSI 颜色/样式代码
@@ -300,6 +313,11 @@ def analyze_log(filepath):
                 if re.search(pattern, stripped, re.IGNORECASE):
                     return "WAITING", stripped[:60], -1, ""
             return "WAITING", last_line[:60], -1, ""
+
+    # 构建工具完成特征 (gradle/mvn): 匹配到即刻判定 IDLE
+    for pattern, msg in BUILD_DONE_PATTERNS:
+        if re.search(pattern, context, re.IGNORECASE):
+            return "IDLE", msg, -1, ""
 
     # AI 工具特征匹配: 检查是否出现空闲特征 (零延迟)
     # 策略: 比较 IDLE_PATTERNS 和 BUSY_PATTERNS 在尾部的最后出现位置

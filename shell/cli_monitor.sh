@@ -95,5 +95,6 @@ function ai_monitor_list() {
 # -------------------------------------------
 alias claude="ai_wrapper claude"
 alias codex="ai_wrapper codex"
+alias gemini="ai_wrapper gemini"
 alias gradle="ai_wrapper gradle"
 alias mvn="ai_wrapper mvn"
