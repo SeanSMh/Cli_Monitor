@@ -63,6 +63,7 @@ from monitor import (
     clear_rate_history,
     DEFAULT_LOG_DIR,
 )
+from terminal_adapters import TerminalFocusService
 
 # === 配置 ===
 LOG_DIR = os.environ.get("AI_MONITOR_DIR", DEFAULT_LOG_DIR)
@@ -91,6 +92,7 @@ _status_item = None
 _sb_delegate = None
 _resize_delegate = None
 _api = None
+_terminal_focus_service = TerminalFocusService()
 
 
 # ===========================================
@@ -315,60 +317,6 @@ def _get_tty_from_pid(pid):
         return tty
     except Exception:
         return ""
-
-
-def _run_osascript(script):
-    try:
-        res = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return res.returncode == 0 and res.stdout.strip().lower() == "true"
-    except Exception:
-        return False
-
-
-def _focus_terminal_by_tty(tty):
-    """根据 tty 激活对应终端 tab/session，优先 iTerm2，其次 Terminal。"""
-    tty_short = tty.replace("/dev/", "", 1)
-
-    script_iterm2 = f'''
-tell application "iTerm2"
-    repeat with w in windows
-        repeat with t in tabs of w
-            repeat with s in sessions of t
-                if tty of s is "{tty}" or tty of s is "{tty_short}" then
-                    set current tab of w to t
-                    set current session of t to s
-                    activate
-                    return true
-                end if
-            end repeat
-        end repeat
-    end repeat
-    return false
-end tell
-'''.strip()
-
-    script_terminal = f'''
-tell application "Terminal"
-    repeat with w in windows
-        repeat with t in tabs of w
-            if tty of t is "{tty}" or tty of t is "{tty_short}" then
-                set selected tab of w to t
-                set index of w to 1
-                activate
-                return true
-            end if
-        end repeat
-    end repeat
-    return false
-end tell
-'''.strip()
-
-    return _run_osascript(script_iterm2) or _run_osascript(script_terminal)
 
 
 # ===========================================
@@ -685,7 +633,10 @@ class Api:
             tty = _get_tty_from_pid(pid)
             if not tty:
                 return False
-            return _focus_terminal_by_tty(tty)
+            result = _terminal_focus_service.focus_by_tty(tty)
+            if not result.success:
+                _log(f"focus_task 未命中 tty={tty} reason={result.reason}")
+            return result.success
         except Exception as e:
             _log(f"focus_task 失败: {e}")
             return False

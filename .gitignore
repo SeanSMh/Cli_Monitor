@@ -8,6 +8,7 @@ __pycache__/
 build/
 dist/
 *.spec
+.pyinstaller/
 
 # macOS
 .DS_Store

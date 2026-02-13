@@ -75,17 +75,27 @@ ai_monitor_list
 
 ```bash
 # 安装依赖
-pip3 install rumps py2app
+pip3 install pyinstaller pywebview watchdog pyobjc-framework-Cocoa
 
 # 直接运行 (开发模式)
-python3 menubar_app.py
+python3 panel_app.py
 
 # 或打包为独立 .app
-python3 setup.py py2app
+./scripts/build_macos.sh
 # 生成的应用在 dist/CLI Monitor.app
 ```
 
 状态栏显示 🛡️ 图标，有待确认任务时自动变为 ⚠️ 并推送系统通知。
+
+## ✅ 质量检查
+
+```bash
+# 运行状态机回归测试 (标准库 unittest)
+python3 -m unittest -q tests/test_monitor_analyze_log.py
+
+# macOS 打包并校验产物
+./scripts/build_macos.sh
+```
 
 ## 🗑️ 卸载
 
@@ -101,8 +111,13 @@ cli-monitor/
 ├── shell/
 │   └── cli_monitor.sh   # 注入层: Shell 包装函数
 ├── monitor.py            # 监控层: Python 终端看板
-├── menubar_app.py        # macOS 状态栏应用
-├── setup.py              # py2app 打包配置
+├── panel_app.py          # macOS 面板 + 状态栏应用
+├── terminal_adapters.py  # 终端跳转适配层 (iTerm2/Terminal)
+├── CLI Monitor.spec      # PyInstaller 构建配置 (onedir)
+├── scripts/
+│   └── build_macos.sh    # macOS 打包脚本
+├── tests/
+│   └── test_monitor_analyze_log.py  # analyze_log 回归测试
 ├── install.sh            # 安装脚本
 ├── uninstall.sh          # 卸载脚本
 └── README.md             # 本文件
