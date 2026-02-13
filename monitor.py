@@ -13,6 +13,7 @@ import time
 import glob
 import re
 import argparse
+from collections import defaultdict
 
 # === 配置区 ===
 DEFAULT_LOG_DIR = "/tmp/ai_monitor_logs"
@@ -21,6 +22,9 @@ DEFAULT_MAX_TASKS = 5        # 默认显示最近 N 个任务
 TAIL_BYTES = 4096            # 尾部读取字节数 (避免大文件全量加载)
 IDLE_THRESHOLD_SECONDS = 60  # 通用兜底阈值: 60 秒无新输出 (仅用于无特征匹配的未知工具)
 POST_BUSY_IDLE_SECONDS = 10  # 后忙碌快速检测: BUSY 特征消失后 10 秒无输出即判定 IDLE
+RATE_IDLE_SECONDS = 5         # 速率检测: 从高速输出→停止 后 5 秒判定 IDLE
+RATE_HIGH_THRESHOLD = 200     # 字节/秒: 超过此值视为 "正在回复" (文本流)
+RATE_HISTORY_SIZE = 30        # 保留最近 N 个采样点 (默认 2秒刷新, 博 60 秒历史)
 
 # 状态正则匹配规则 (根据你的工具习惯调整)
 WAIT_PATTERNS = [
@@ -146,6 +150,65 @@ def calculate_duration(start_time, end_time):
         return ""
 
 
+# === 输出速率跟踪器 ===
+# 记录每个日志文件的 (timestamp, file_size) 采样历史
+_file_size_history = defaultdict(list)  # {filepath: [(ts, size), ...]}
+
+
+def track_file_rate(filepath):
+    """
+    跟踪文件大小变化速率。
+
+    Returns:
+        (was_fast, is_stalled, stall_duration)
+        was_fast:       历史中是否出现过高速输出 (>200 B/s)
+        is_stalled:     当前是否停止输出 (文件大小不再变化)
+        stall_duration: 停止输出的持续秒数
+    """
+    try:
+        now = time.time()
+        size = os.path.getsize(filepath)
+    except Exception:
+        return False, False, 0
+
+    history = _file_size_history[filepath]
+    history.append((now, size))
+
+    # 保留最近 N 个采样点
+    if len(history) > RATE_HISTORY_SIZE:
+        history[:] = history[-RATE_HISTORY_SIZE:]
+
+    # 至少需要 2 个采样点才能计算速率
+    if len(history) < 2:
+        return False, False, 0
+
+    # 检查历史中是否出现过高速输出
+    was_fast = False
+    for i in range(1, len(history)):
+        dt = history[i][0] - history[i - 1][0]
+        ds = history[i][1] - history[i - 1][1]
+        if dt > 0 and ds / dt > RATE_HIGH_THRESHOLD:
+            was_fast = True
+            break
+
+    # 检查是否停止输出: 文件大小不再变化
+    current_size = history[-1][1]
+    stall_start = now
+    for ts, sz in reversed(history):
+        if sz != current_size:
+            break
+        stall_start = ts
+    stall_duration = now - stall_start
+    is_stalled = stall_duration > 0 and current_size == history[-1][1]
+
+    return was_fast, is_stalled, stall_duration
+
+
+def clear_rate_history(filepath):
+    """清理已结束任务的速率历史"""
+    _file_size_history.pop(filepath, None)
+
+
 def analyze_log(filepath):
     """
     分析日志文件以确定任务状态。
@@ -217,35 +280,30 @@ def analyze_log(filepath):
         if last_idle_pos > last_busy_pos:
             return "IDLE", "等待输入", -1, ""
 
-    # ── 后忙碌快速检测 ──
-    # 场景: Claude/codex 完成回复后, BUSY 特征消失但提示符还没出现
-    # 在更大范围 (最后 30 行) 搜索 BUSY 特征, 如果 "曾经忙碌但现在不忙了",
-    # 且文件 10 秒无新输出, 则快速判定为 IDLE
+    # ── 输出速率检测 (最高优先级) ──
+    # 不依赖文本特征, 通过文件大小变化速率检测:
+    #   高速(>200B/s) → 静止(5秒) = "从回复中停下来了"
+    was_fast, is_stalled, stall_secs = track_file_rate(filepath)
+    if was_fast and is_stalled and stall_secs >= RATE_IDLE_SECONDS:
+        return "IDLE", "AI 已完成回复", -1, ""
+
+    # ── 后忙碌快速检测 (备用) ──
+    # 场景: BUSY 特征消失但提示符未出现, 且速率检测未触发 (如回复太短)
     try:
         mtime = os.path.getmtime(filepath)
         idle_seconds = time.time() - mtime
 
-        # 检查尾部 5 行是否有 BUSY 特征
-        busy_in_tail = False
-        for pattern in BUSY_PATTERNS:
-            if re.search(pattern, context, re.IGNORECASE):
-                busy_in_tail = True
-                break
+        busy_in_tail = any(
+            re.search(p, context, re.IGNORECASE) for p in BUSY_PATTERNS
+        )
 
         if not busy_in_tail and idle_seconds > POST_BUSY_IDLE_SECONDS:
-            # 在更大范围搜索: 是否 "曾经" 在工作
             broad_lines = lines[-30:] if len(lines) >= 30 else lines
             broad_context = "".join([strip_ansi(l) for l in broad_lines])
-            was_busy = False
-            for pattern in BUSY_PATTERNS:
-                if re.search(pattern, broad_context, re.IGNORECASE):
-                    was_busy = True
-                    break
-
-            if was_busy:
+            if any(re.search(p, broad_context, re.IGNORECASE) for p in BUSY_PATTERNS):
                 return "IDLE", "AI 已完成回复", -1, ""
 
-        # 通用兜底: 文件超过 60 秒无新输出 (适用于无特征匹配的未知工具)
+        # 通用兜底: 60 秒无输出
         if idle_seconds > IDLE_THRESHOLD_SECONDS:
             return "IDLE", "等待输入", -1, ""
     except Exception:
