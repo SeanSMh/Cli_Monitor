@@ -43,6 +43,19 @@ else:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
+# 启动日志 (调试打包问题)
+_BOOT_LOG = "/tmp/cli_monitor_boot.log"
+def _log(msg):
+    try:
+        with open(_BOOT_LOG, "a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+_log(f"启动: frozen={getattr(sys, 'frozen', False)} SCRIPT_DIR={SCRIPT_DIR}")
+_log(f"panel.html: {os.path.exists(os.path.join(SCRIPT_DIR, 'panel.html'))}")
+_log(f"monitor.py: {os.path.exists(os.path.join(SCRIPT_DIR, 'monitor.py'))}")
+_log(f"shell/cli_monitor.sh: {os.path.exists(os.path.join(SCRIPT_DIR, 'shell', 'cli_monitor.sh'))}")
+
 from monitor import (
     analyze_log,
     parse_start_info,
@@ -471,6 +484,7 @@ def on_closing():
 
 def main():
     global _window
+    _log("main() 开始")
     os.makedirs(LOG_DIR, exist_ok=True)
 
     inject_shell_wrapper()
@@ -490,6 +504,7 @@ def main():
     signal.signal(signal.SIGINT, _signal_handler)
 
     api = Api()
+    _log(f"PANEL_HTML={PANEL_HTML} exists={os.path.exists(PANEL_HTML)}")
 
     _window = webview.create_window(
         title="CLI Monitor",
@@ -503,14 +518,18 @@ def main():
         easy_drag=True,
         background_color="#0F1118",
     )
+    _log("webview.create_window 完成")
 
     # 拦截窗口关闭: 隐藏到状态栏而非退出
     _window.events.closing += on_closing
 
     def on_started():
         """pywebview 在后台线程调用此函数; 安全调度状态栏创建到主线程"""
+        _log("on_started() 开始")
         setup_statusbar_from_thread()
+        _log("on_started() 完成")
 
+    _log("webview.start 即将调用")
     webview.start(func=on_started, debug=False)
 
     # webview 退出后清理
