@@ -55,6 +55,12 @@
             --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
             --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.2);
             --radius: 14px;
+            --switch-x: calc(100% - 46px);
+            --switch-y: 34px;
+            --switch-r: 560px;
+            --theme-flash-core: rgba(255, 255, 255, 0.72);
+            --theme-flash-edge: rgba(96, 165, 250, 0.26);
+            --theme-beam: rgba(255, 255, 255, 0.28);
         }
 
         /* ===== 浅色主题 ===== */
@@ -124,15 +130,17 @@
         body::before {
             content: '';
             position: absolute;
-            inset: -20% -30%;
+            inset: 0;
             pointer-events: none;
             opacity: 0;
-            background: linear-gradient(110deg,
-                    transparent 30%,
-                    rgba(255, 255, 255, 0.28) 50%,
-                    transparent 70%);
-            transform: translateX(-120%);
-            z-index: 20;
+            z-index: 25;
+            background:
+                radial-gradient(circle at var(--switch-x) var(--switch-y),
+                    var(--theme-flash-core) 0%,
+                    var(--theme-flash-edge) 32%,
+                    transparent 72%);
+            clip-path: circle(0px at var(--switch-x) var(--switch-y));
+            will-change: clip-path, opacity;
         }
 
         body::after {
@@ -141,76 +149,187 @@
             inset: 0;
             pointer-events: none;
             opacity: 0;
-            background: radial-gradient(circle at 88% 8%, rgba(96, 165, 250, 0.3), transparent 42%);
-            z-index: 19;
+            z-index: 24;
+            background: linear-gradient(112deg,
+                    transparent 14%,
+                    var(--theme-beam) 44%,
+                    transparent 74%);
+            transform: translate3d(-135%, 0, 0) skewX(-14deg);
+            will-change: transform, opacity;
+        }
+
+        body[data-theme-next="light"] {
+            --theme-flash-core: rgba(255, 255, 255, 0.76);
+            --theme-flash-edge: rgba(147, 197, 253, 0.3);
+            --theme-beam: rgba(255, 255, 255, 0.34);
+        }
+
+        body[data-theme-next="dark"] {
+            --theme-flash-core: rgba(15, 23, 42, 0.8);
+            --theme-flash-edge: rgba(37, 99, 235, 0.34);
+            --theme-beam: rgba(148, 163, 184, 0.28);
         }
 
         body.theme-switching::before {
-            animation: theme-sweep 0.56s cubic-bezier(0.25, 0.8, 0.25, 1);
+            animation: theme-radial-reveal 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
         }
 
         body.theme-switching::after {
-            animation: theme-overlay-fade 0.56s ease;
+            animation: theme-beam-sweep 0.62s cubic-bezier(0.2, 0.85, 0.2, 1);
         }
 
         body.theme-switching,
         body.theme-switching * {
-            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+            transition: background-color 0.4s ease, color 0.4s ease, border-color 0.4s ease, box-shadow 0.4s ease;
         }
 
         body.theme-switching .header,
         body.theme-switching .task-grid,
         body.theme-switching .footer {
-            animation: theme-content-swap 0.62s ease;
+            animation: theme-structure-shift 0.72s ease;
         }
 
-        @keyframes theme-sweep {
+        body.theme-switching .header-icon,
+        body.theme-switching .empty-graphic {
+            animation: theme-accent-pulse 0.68s cubic-bezier(0.2, 0.8, 0.25, 1);
+        }
+
+        body.theme-switching .task-card {
+            animation: theme-card-cascade 0.58s cubic-bezier(0.22, 0.85, 0.24, 1) both;
+            animation-delay: calc(var(--stagger-index, 0) * 38ms);
+            will-change: transform, opacity, filter;
+        }
+
+        body.theme-switching .empty-state {
+            animation: theme-empty-rise 0.62s ease both;
+        }
+
+        @keyframes theme-radial-reveal {
             0% {
-                opacity: 0;
-                transform: translateX(-120%);
+                opacity: 0.12;
+                clip-path: circle(0px at var(--switch-x) var(--switch-y));
             }
 
-            20% {
-                opacity: 1;
+            30% {
+                opacity: 0.95;
             }
 
             100% {
                 opacity: 0;
-                transform: translateX(120%);
+                clip-path: circle(var(--switch-r) at var(--switch-x) var(--switch-y));
             }
         }
 
-        @keyframes theme-overlay-fade {
+        @keyframes theme-beam-sweep {
             0% {
                 opacity: 0;
+                transform: translate3d(-135%, 0, 0) skewX(-14deg);
+            }
+
+            35% {
+                opacity: 0.9;
+            }
+
+            100% {
+                opacity: 0;
+                transform: translate3d(125%, 0, 0) skewX(-14deg);
+            }
+        }
+
+        @keyframes theme-structure-shift {
+            0% {
+                opacity: 1;
+                filter: blur(0px);
+                transform: translateY(0);
+            }
+
+            38% {
+                opacity: 0.42;
+                filter: blur(2.8px);
+                transform: translateY(2px) scale(0.996);
+            }
+
+            100% {
+                opacity: 1;
+                filter: blur(0px);
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        @keyframes theme-accent-pulse {
+            0% {
+                transform: scale(1) rotate(0deg);
+                filter: hue-rotate(0deg) saturate(1);
             }
 
             45% {
-                opacity: 1;
+                transform: scale(1.08) rotate(-5deg);
+                filter: hue-rotate(16deg) saturate(1.2);
             }
 
             100% {
-                opacity: 0;
+                transform: scale(1) rotate(0deg);
+                filter: hue-rotate(0deg) saturate(1);
             }
         }
 
-        @keyframes theme-content-swap {
+        @keyframes theme-card-cascade {
             0% {
-                opacity: 1;
-                filter: blur(0px);
-                transform: translateY(0);
+                transform: translateY(10px) scale(0.97);
+                opacity: 0.28;
+                filter: blur(3px);
             }
 
-            42% {
-                opacity: 0.35;
-                filter: blur(2px);
-                transform: translateY(1px);
+            55% {
+                transform: translateY(-2px) scale(1.01);
+                opacity: 0.88;
+                filter: blur(0.6px);
+            }
+
+            100% {
+                transform: translateY(0) scale(1);
+                opacity: 1;
+                filter: blur(0);
+            }
+        }
+
+        @keyframes theme-empty-rise {
+            0% {
+                opacity: 0.25;
+                transform: translateY(8px) scale(0.98);
             }
 
             100% {
                 opacity: 1;
-                filter: blur(0px);
-                transform: translateY(0);
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            body.theme-switching::before,
+            body.theme-switching::after {
+                animation: none;
+                opacity: 0;
+            }
+
+            body.theme-switching .header,
+            body.theme-switching .task-grid,
+            body.theme-switching .footer,
+            body.theme-switching .task-card,
+            body.theme-switching .empty-state,
+            body.theme-switching .header-icon,
+            body.theme-switching .empty-graphic {
+                animation: theme-fade-only 0.2s ease both;
+            }
+        }
+
+        @keyframes theme-fade-only {
+            0% {
+                opacity: 0.75;
+            }
+
+            100% {
+                opacity: 1;
             }
         }
 
@@ -710,7 +829,7 @@
             </div>
         </div>
         <div class="header-actions">
-            <button class="btn-icon" onclick="toggleTheme()" title="切换主题" id="themeBtn" data-testid="theme-btn">🌙</button>
+            <button class="btn-icon" onclick="toggleTheme(event)" title="切换主题" id="themeBtn" data-testid="theme-btn">🌙</button>
             <button class="btn-icon" onclick="manualRefresh()" title="刷新" id="refreshBtn" data-testid="refresh-btn"><span class="refresh-icon">↻</span></button>
         </div>
     </div>
@@ -773,12 +892,12 @@
             const active = tasks.filter(t => t.status !== 'DONE').length;
             sub.textContent = `${active} 个活跃 · 共 ${tasks.length} 个任务`;
 
-            grid.innerHTML = tasks.map(t => {
+            grid.innerHTML = tasks.map((t, i) => {
                 const cls = getCardClass(t);
                 const info = getInfoText(t);
                 const safeLogFile = t.log_file.replace(/'/g, "\\'");
                 return `
-        <div class="task-card ${cls}" data-testid="task-card" data-log-file="${safeLogFile}" onclick="openTask('${safeLogFile}')">
+        <div class="task-card ${cls}" style="--stagger-index:${i};" data-testid="task-card" data-log-file="${safeLogFile}" onclick="openTask('${safeLogFile}')">
           <div class="status-dot ${cls}"></div>
           <div class="card-body">
             <div class="tool-name">${t.tool}</div>
@@ -896,23 +1015,38 @@
             } catch (e) { }
         }
 
-        function toggleTheme() {
+        function toggleTheme(event) {
             const body = document.body;
             if (body.classList.contains('theme-switching')) return;
 
-            body.classList.add('theme-switching');
-
             const html = document.documentElement;
             const next = html.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+            const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            const x = event && typeof event.clientX === 'number' ? event.clientX : window.innerWidth - 44;
+            const y = event && typeof event.clientY === 'number' ? event.clientY : 34;
+            const maxX = Math.max(x, window.innerWidth - x);
+            const maxY = Math.max(y, window.innerHeight - y);
+            const radius = Math.ceil(Math.hypot(maxX, maxY));
 
-            // 先播放切换过渡，再应用主题，让“切换过程”更明确。
+            body.style.setProperty('--switch-x', `${Math.round(x)}px`);
+            body.style.setProperty('--switch-y', `${Math.round(y)}px`);
+            body.style.setProperty('--switch-r', `${radius}px`);
+            body.setAttribute('data-theme-next', next);
+            body.classList.add('theme-switching');
+
+            const switchDelay = reduceMotion ? 90 : 300;
+            const cleanupDelay = reduceMotion ? 220 : 720;
+
             setTimeout(() => {
                 html.setAttribute('data-theme', next === 'dark' ? '' : 'light');
                 document.getElementById('themeBtn').textContent = next === 'light' ? '☀️' : '🌙';
                 localStorage.setItem('cli-monitor-theme', next);
-            }, 260);
+            }, switchDelay);
 
-            setTimeout(() => body.classList.remove('theme-switching'), 620);
+            setTimeout(() => {
+                body.classList.remove('theme-switching');
+                body.removeAttribute('data-theme-next');
+            }, cleanupDelay);
         }
 
         function initTheme() {
