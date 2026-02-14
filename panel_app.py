@@ -18,6 +18,8 @@ import signal
 import subprocess
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import webview
 
@@ -59,11 +61,12 @@ _log(f"shell/cli_monitor.sh: {os.path.exists(os.path.join(SCRIPT_DIR, 'shell', '
 from monitor import (
     analyze_log,
     parse_start_info,
+    parse_session_meta,
     calculate_duration,
     clear_rate_history,
     DEFAULT_LOG_DIR,
 )
-from terminal_adapters import TerminalFocusService
+from terminal_adapters import SessionMeta, TerminalFocusService
 
 # === 配置 ===
 LOG_DIR = os.environ.get("AI_MONITOR_DIR", DEFAULT_LOG_DIR)
@@ -93,6 +96,10 @@ _sb_delegate = None
 _resize_delegate = None
 _api = None
 _terminal_focus_service = TerminalFocusService()
+E2E_MODE = os.environ.get("CLI_MONITOR_E2E", "0") == "1"
+E2E_HOST = os.environ.get("CLI_MONITOR_E2E_HOST", "127.0.0.1")
+E2E_PORT = int(os.environ.get("CLI_MONITOR_E2E_PORT", "18787"))
+_e2e_server = None
 
 
 # ===========================================
@@ -319,6 +326,24 @@ def _get_tty_from_pid(pid):
         return ""
 
 
+def _build_session_meta(log_file):
+    meta = parse_session_meta(log_file)
+
+    if not meta.get("shell_pid"):
+        pid = _extract_pid_from_log_file(log_file)
+        if pid:
+            meta["shell_pid"] = str(pid)
+
+    shell_pid = str(meta.get("shell_pid", "")).strip()
+    if shell_pid and not meta.get("tty"):
+        try:
+            meta["tty"] = _get_tty_from_pid(int(shell_pid))
+        except Exception:
+            pass
+
+    return SessionMeta.from_mapping(meta)
+
+
 # ===========================================
 # macOS 状态栏图标
 # ===========================================
@@ -358,6 +383,9 @@ if HAS_APPKIT:
                     _api.clear_unread_notifications()
 
         def statusBarClicked_(self, sender):
+            self.toggle_panel()
+
+        def doTogglePanel_(self, _):
             self.toggle_panel()
 
         def doSetupStatusBar_(self, _):
@@ -441,12 +469,93 @@ def setup_statusbar_from_thread():
     print("[CLI Monitor] ✅ 状态栏调度完成")
 
 
+def toggle_panel_from_thread():
+    if not HAS_APPKIT or _sb_delegate is None:
+        return False
+    _sb_delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "doTogglePanel:", None, True
+    )
+    return True
+
+
 def setup_resize_delegate():
     global _resize_delegate
     if not HAS_APPKIT:
         return
     if _resize_delegate is None:
         _resize_delegate = ResizeDelegate.alloc().init()
+
+
+# ===========================================
+# E2E 调试服务 (仅测试模式开启)
+# ===========================================
+
+
+def _start_e2e_server(api):
+    global _e2e_server
+    if not E2E_MODE or _e2e_server is not None:
+        return
+
+    class _E2EHandler(BaseHTTPRequestHandler):
+        def _json(self, status_code, payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _parse(self):
+            parsed = urlparse(self.path)
+            return parsed.path, parse_qs(parsed.query)
+
+        def do_GET(self):
+            path, _ = self._parse()
+            if path == "/state":
+                self._json(200, api.debug_get_state())
+                return
+            self._json(404, {"ok": False, "error": "not_found"})
+
+        def do_POST(self):
+            path, query = self._parse()
+            if path == "/toggle_panel":
+                ok = toggle_panel_from_thread()
+                self._json(200, {"ok": ok, "state": api.debug_get_state()})
+                return
+            if path == "/set_unread":
+                count = query.get("count", ["0"])[0]
+                value = api.debug_set_unread_count(count)
+                self._json(200, {"ok": value >= 0, "value": value, "state": api.debug_get_state()})
+                return
+            if path == "/focus_task":
+                log_file = query.get("log_file", [""])[0]
+                ok = api.focus_task(log_file)
+                self._json(200, {"ok": bool(ok), "state": api.debug_get_state()})
+                return
+            self._json(404, {"ok": False, "error": "not_found"})
+
+        def log_message(self, fmt, *args):
+            return
+
+    try:
+        _e2e_server = ThreadingHTTPServer((E2E_HOST, E2E_PORT), _E2EHandler)
+        thread = threading.Thread(target=_e2e_server.serve_forever, daemon=True)
+        thread.start()
+        _log(f"E2E server started: http://{E2E_HOST}:{E2E_PORT}")
+    except Exception as e:
+        _log(f"E2E server start failed: {e}")
+
+
+def _stop_e2e_server():
+    global _e2e_server
+    if _e2e_server is None:
+        return
+    try:
+        _e2e_server.shutdown()
+        _e2e_server.server_close()
+    except Exception:
+        pass
+    _e2e_server = None
 
 
 # ===========================================
@@ -461,6 +570,7 @@ class Api:
         self._task_states = {}       # Key: log_file -> last_status
         self._first_run = True       # 启动时不通知
         self._unread_notification_count = 0  # 未读通知数 (用于状态栏角标)
+        self._last_focus_result = {"success": False, "provider": "", "reason": ""}
 
     def get_tasks(self):
         if not os.path.exists(LOG_DIR):
@@ -623,23 +733,60 @@ class Api:
         try:
             if not log_file or not log_file.startswith(LOG_DIR):
                 return False
-            pid = _extract_pid_from_log_file(log_file)
-            if not pid:
-                return False
+            meta = _build_session_meta(log_file)
+            pid = 0
             try:
-                os.kill(pid, 0)
-            except OSError:
-                return False
-            tty = _get_tty_from_pid(pid)
-            if not tty:
-                return False
-            result = _terminal_focus_service.focus_by_tty(tty)
+                pid = int(meta.shell_pid) if meta.shell_pid else 0
+            except Exception:
+                pid = 0
+
+            if pid > 0:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    self._last_focus_result = {
+                        "success": False,
+                        "provider": "",
+                        "reason": f"pid dead: {pid}",
+                    }
+                    return False
+
+            result = _terminal_focus_service.focus(meta)
+            self._last_focus_result = {
+                "success": bool(result.success),
+                "provider": str(result.provider or ""),
+                "reason": str(result.reason or ""),
+            }
             if not result.success:
-                _log(f"focus_task 未命中 tty={tty} reason={result.reason}")
+                _log(
+                    "focus_task 未命中 "
+                    f"tty={meta.tty} term={meta.term_program} reason={result.reason}"
+                )
             return result.success
         except Exception as e:
+            self._last_focus_result = {"success": False, "provider": "", "reason": str(e)}
             _log(f"focus_task 失败: {e}")
             return False
+
+    def debug_get_state(self):
+        if not E2E_MODE:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "unread_notification_count": self._unread_notification_count,
+            "last_focus_result": self._last_focus_result,
+            "window_visible": bool(_window_visible),
+        }
+
+    def debug_set_unread_count(self, count):
+        if not E2E_MODE:
+            return -1
+        try:
+            self._unread_notification_count = max(0, int(count))
+            update_status_icon(self._unread_notification_count)
+            return self._unread_notification_count
+        except Exception:
+            return -1
 
     def resize_window(self, width, height):
         """自适应调整窗口高度"""
@@ -661,6 +808,7 @@ class Api:
 
     def quit_app(self):
         """真正退出"""
+        _stop_e2e_server()
         cleanup_shell_wrapper()
         if _status_item:
             NSStatusBar.systemStatusBar().removeStatusItem_(_status_item)
@@ -748,6 +896,7 @@ def main():
     inject_claude_hooks()
 
     def _cleanup_all():
+        _stop_e2e_server()
         cleanup_shell_wrapper()
         cleanup_claude_hooks()
 
@@ -762,6 +911,7 @@ def main():
 
     api = Api()
     _api = api
+    _start_e2e_server(api)
     _log(f"PANEL_HTML={PANEL_HTML} exists={os.path.exists(PANEL_HTML)}")
 
     _window = webview.create_window(

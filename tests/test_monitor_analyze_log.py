@@ -12,10 +12,13 @@ def _write_log(
     tool: str,
     lines: list[str],
     start_ts: str = "2026-02-13 10:00:00",
+    meta: dict | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         f.write(f"--- MONITOR_START: {tool} | {start_ts} ---\n")
+        for k, v in (meta or {}).items():
+            f.write(f"--- MONITOR_META {k}: {v} ---\n")
         for line in lines:
             f.write(line)
 
@@ -109,6 +112,39 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertNotIn("\x1b", msg)
         self.assertNotIn("\x00", msg)
         self.assertIn("Hello", msg)
+
+    def test_parse_session_meta_reads_header_fields(self):
+        log = self.tmp_path / "logs" / "codex_1739450000_4567_99.log"
+        _write_log(
+            log,
+            "codex",
+            ["running...\n"],
+            meta={
+                "term_program": "iTerm.app",
+                "tty": "ttys012",
+                "cwd": "/tmp/work",
+                "shell_pid": "4567",
+                "wezterm_pane_id": "42",
+            },
+        )
+
+        meta = self.monitor.parse_session_meta(str(log))
+        self.assertEqual(meta["term_program"], "iTerm.app")
+        self.assertEqual(meta["tty"], "/dev/ttys012")
+        self.assertEqual(meta["cwd"], "/tmp/work")
+        self.assertEqual(meta["shell_pid"], "4567")
+        self.assertEqual(meta["wezterm_pane_id"], "42")
+
+    def test_parse_session_meta_fallback_pid_from_filename(self):
+        log = self.tmp_path / "logs" / "codex_1739450000_7654_11.log"
+        _write_log(log, "codex", ["running...\n"])
+
+        meta = self.monitor.parse_session_meta(str(log))
+        self.assertEqual(meta["shell_pid"], "7654")
+
+    def test_format_status_closed_for_137(self):
+        text = self.monitor.format_status("DONE", 137)
+        self.assertIn("已关闭", text)
 
 
 if __name__ == "__main__":

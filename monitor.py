@@ -13,6 +13,7 @@ import time
 import glob
 import re
 import argparse
+from itertools import islice
 from collections import defaultdict
 from threading import Timer, Lock
 from config_loader import config
@@ -114,6 +115,65 @@ def parse_start_info(filepath):
             pass
 
     return tool_name, start_time
+
+
+def parse_session_meta(filepath, max_lines=24):
+    """
+    解析日志头部 MONITOR_META 行，返回会话元数据。
+    返回值示例:
+      {
+        "term_program": "iTerm.app",
+        "tty": "/dev/ttys003",
+        "cwd": "/Users/me/project",
+        "shell_pid": "12345",
+        ...
+      }
+    """
+    meta = {
+        "term_program": "",
+        "term_program_version": "",
+        "tty": "",
+        "cwd": "",
+        "shell_pid": "",
+        "shell_ppid": "",
+        "wezterm_pane_id": "",
+        "warp_session_id": "",
+        "vscode_pid": "",
+        "vscode_cwd": "",
+    }
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in islice(f, max_lines):
+                if "MONITOR_META" not in line:
+                    continue
+                match = re.search(r"MONITOR_META\s+([a-zA-Z0-9_]+):\s*(.*?)\s*---\s*$", line.strip())
+                if not match:
+                    continue
+                key = match.group(1)
+                value = match.group(2).strip()
+                if key in meta:
+                    meta[key] = value
+    except Exception:
+        pass
+
+    tty = meta.get("tty", "").strip()
+    if tty and tty != "not a tty" and tty != "?":
+        if not tty.startswith("/dev/"):
+            tty = f"/dev/{tty}"
+        meta["tty"] = tty
+    else:
+        meta["tty"] = ""
+
+    if not meta.get("shell_pid"):
+        try:
+            basename = os.path.basename(filepath)
+            parts = basename.rsplit("_", 3)
+            if len(parts) >= 3:
+                meta["shell_pid"] = str(int(parts[2]))
+        except Exception:
+            pass
+
+    return meta
 
 
 def parse_end_info(lines):
@@ -424,6 +484,7 @@ def format_status(status, exit_code=-1):
     elif status == "RUNNING": return f"{GREEN}🟢 运行中{RESET}"
     else:
         if exit_code == 0: return f"{GRAY}⚪ 已完成{RESET}"
+        elif exit_code == 137: return f"{GRAY}⚪ 已关闭{RESET}"
         elif exit_code > 0: return f"{GRAY}🔴 异常退出({exit_code}){RESET}"
         else: return f"{GRAY}⚪ 已结束{RESET}"
 

@@ -710,24 +710,24 @@
             </div>
         </div>
         <div class="header-actions">
-            <button class="btn-icon" onclick="toggleTheme()" title="切换主题" id="themeBtn">🌙</button>
-            <button class="btn-icon" onclick="manualRefresh()" title="刷新" id="refreshBtn"><span class="refresh-icon">↻</span></button>
+            <button class="btn-icon" onclick="toggleTheme()" title="切换主题" id="themeBtn" data-testid="theme-btn">🌙</button>
+            <button class="btn-icon" onclick="manualRefresh()" title="刷新" id="refreshBtn" data-testid="refresh-btn"><span class="refresh-icon">↻</span></button>
         </div>
     </div>
 
-    <div class="task-grid" id="taskGrid">
+    <div class="task-grid" id="taskGrid" data-testid="task-grid">
         <!-- 动态内容 -->
-        <div class="empty-state">
-            <div class="empty-graphic">🛡</div>
-            <div class="empty-title">加载中...</div>
+        <div class="empty-state" data-testid="empty-state">
+            <div class="empty-graphic" data-testid="empty-icon">🛡</div>
+            <div class="empty-title" data-testid="empty-title">加载中...</div>
         </div>
     </div>
 
     <div class="footer">
         <div class="footer-left">
-            <button class="btn icon-only" onclick="clearDone()" title="清除已完成">🗑</button>
+            <button class="btn icon-only" onclick="clearDone()" title="清除已完成" data-testid="clear-done-btn">🗑</button>
         </div>
-        <button class="btn quit icon-only" onclick="quit()" title="退出">⏻</button>
+        <button class="btn quit icon-only" onclick="quit()" title="退出" data-testid="quit-btn">⏻</button>
     </div>
 
     <script>
@@ -741,6 +741,7 @@
         }
 
         function getBadgeText(t) {
+            if (t.status === 'DONE' && t.exit_code === 137) return '已关闭';
             if (t.status === 'DONE' && t.exit_code > 0) return `退出(${t.exit_code})`;
             return BADGE_LABELS[getCardClass(t)] || '运行中';
         }
@@ -760,10 +761,10 @@
             if (!tasks || tasks.length === 0) {
                 sub.textContent = '';
                 grid.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-graphic">🛡</div>
-          <div class="empty-title">暂无活跃任务</div>
-          <div class="empty-sub">在终端中运行 codex、claude 等命令<br>即可自动开始监控</div>
+        <div class="empty-state" data-testid="empty-state">
+          <div class="empty-graphic" data-testid="empty-icon">🛡</div>
+          <div class="empty-title" data-testid="empty-title">暂无活跃任务</div>
+          <div class="empty-sub" data-testid="empty-sub">在终端中运行 codex、claude 等命令<br>即可自动开始监控</div>
         </div>`;
                 requestAnimationFrame(() => updateWindowSize(0));
                 return;
@@ -777,7 +778,7 @@
                 const info = getInfoText(t);
                 const safeLogFile = t.log_file.replace(/'/g, "\\'");
                 return `
-        <div class="task-card ${cls}" onclick="openTask('${safeLogFile}')">
+        <div class="task-card ${cls}" data-testid="task-card" data-log-file="${safeLogFile}" onclick="openTask('${safeLogFile}')">
           <div class="status-dot ${cls}"></div>
           <div class="card-body">
             <div class="tool-name">${t.tool}</div>
@@ -785,7 +786,7 @@
           </div>
           <div class="card-right">
             <span class="card-badge ${cls}">${getBadgeText(t)}</span>
-            <button class="btn-delete" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
+            <button class="btn-delete" data-testid="delete-task-btn" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
                     title="删除任务">×</button>
           </div>
         </div>`;

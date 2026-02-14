@@ -12,6 +12,7 @@
 - **跨平台** — 自动识别 macOS / Linux，选用对应 `script` 参数
 - **实时看板** — 🟢 运行中 / 🟡 待确认(闪烁) / ⚪ 已结束
 - **macOS 状态栏** — 状态栏小工具，待确认时推送系统通知
+- **终端跳转适配** — 已支持 iTerm2 / Terminal，并内置 Warp / WezTerm / VS Code 适配框架
 
 ## 📦 快速安装
 
@@ -87,11 +88,24 @@ python3 panel_app.py
 
 状态栏显示 🛡️ 图标，有待确认任务时自动变为 ⚠️ 并推送系统通知。
 
+E2E 调试模式（自动化校验用）：
+
+```bash
+CLI_MONITOR_E2E=1 CLI_MONITOR_E2E_PORT=18787 python3 panel_app.py
+# GET  /state
+# POST /toggle_panel
+# POST /set_unread?count=1
+# POST /focus_task?log_file=/tmp/ai_monitor_logs/xxx.log
+```
+
 ## ✅ 质量检查
 
 ```bash
 # 运行状态机回归测试 (标准库 unittest)
-python3 -m unittest -q tests/test_monitor_analyze_log.py
+python3 -m unittest -q tests/test_monitor_analyze_log.py tests/test_terminal_adapters.py
+
+# 面板 E2E 冒烟 (需本机可启动 GUI)
+./scripts/e2e_panel_flow.sh
 
 # macOS 打包并校验产物
 ./scripts/build_macos.sh
@@ -112,12 +126,14 @@ cli-monitor/
 │   └── cli_monitor.sh   # 注入层: Shell 包装函数
 ├── monitor.py            # 监控层: Python 终端看板
 ├── panel_app.py          # macOS 面板 + 状态栏应用
-├── terminal_adapters.py  # 终端跳转适配层 (iTerm2/Terminal)
+├── terminal_adapters.py  # 终端跳转适配层 (iTerm2/Terminal/Warp/WezTerm/VS Code)
 ├── CLI Monitor.spec      # PyInstaller 构建配置 (onedir)
 ├── scripts/
-│   └── build_macos.sh    # macOS 打包脚本
+│   ├── build_macos.sh    # macOS 打包脚本
+│   └── e2e_panel_flow.sh # 面板交互链路 E2E 冒烟脚本
 ├── tests/
-│   └── test_monitor_analyze_log.py  # analyze_log 回归测试
+│   ├── test_monitor_analyze_log.py  # analyze_log + 日志元数据解析测试
+│   └── test_terminal_adapters.py    # 终端跳转适配服务测试
 ├── install.sh            # 安装脚本
 ├── uninstall.sh          # 卸载脚本
 └── README.md             # 本文件

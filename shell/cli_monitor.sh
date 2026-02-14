@@ -28,6 +28,14 @@ fi
 # -------------------------------------------
 # 3. 核心包装函数
 # -------------------------------------------
+function _ai_meta_sanitize() {
+    local raw="${1:-}"
+    raw="${raw//$'\n'/ }"
+    raw="${raw//$'\r'/ }"
+    raw="${raw//---/}"
+    echo "$raw"
+}
+
 function ai_wrapper() {
     local tool_name=$1
     shift # 移除工具名，保留后续参数
@@ -38,6 +46,26 @@ function ai_wrapper() {
 
     # 写入起始标记 (供监控层解析)
     echo "--- MONITOR_START: $tool_name | $(date '+%Y-%m-%d %H:%M:%S') ---" > "$log_file"
+    local _term_program="$(_ai_meta_sanitize "${TERM_PROGRAM:-}")"
+    local _term_program_version="$(_ai_meta_sanitize "${TERM_PROGRAM_VERSION:-}")"
+    local _tty="$(_ai_meta_sanitize "$(tty 2>/dev/null || true)")"
+    local _cwd="$(_ai_meta_sanitize "${PWD:-}")"
+    local _shell_pid="$(_ai_meta_sanitize "$$")"
+    local _shell_ppid="$(_ai_meta_sanitize "$PPID")"
+    local _wezterm_pane="$(_ai_meta_sanitize "${WEZTERM_PANE:-}")"
+    local _warp_session="$(_ai_meta_sanitize "${WARP_SESSION_ID:-}")"
+    local _vscode_pid="$(_ai_meta_sanitize "${VSCODE_PID:-}")"
+    local _vscode_cwd="$(_ai_meta_sanitize "${VSCODE_CWD:-}")"
+    echo "--- MONITOR_META term_program: ${_term_program} ---" >> "$log_file"
+    echo "--- MONITOR_META term_program_version: ${_term_program_version} ---" >> "$log_file"
+    echo "--- MONITOR_META tty: ${_tty} ---" >> "$log_file"
+    echo "--- MONITOR_META cwd: ${_cwd} ---" >> "$log_file"
+    echo "--- MONITOR_META shell_pid: ${_shell_pid} ---" >> "$log_file"
+    echo "--- MONITOR_META shell_ppid: ${_shell_ppid} ---" >> "$log_file"
+    echo "--- MONITOR_META wezterm_pane_id: ${_wezterm_pane} ---" >> "$log_file"
+    echo "--- MONITOR_META warp_session_id: ${_warp_session} ---" >> "$log_file"
+    echo "--- MONITOR_META vscode_pid: ${_vscode_pid} ---" >> "$log_file"
+    echo "--- MONITOR_META vscode_cwd: ${_vscode_cwd} ---" >> "$log_file"
 
     # 根据平台选择正确的 script 命令参数
     if [[ "$_CLI_MONITOR_PLATFORM" == "macos" ]]; then
