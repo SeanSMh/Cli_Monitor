@@ -6,6 +6,8 @@ SPEC_FILE="$ROOT_DIR/CLI Monitor.spec"
 APP_PATH="$ROOT_DIR/dist/CLI Monitor.app"
 BIN_PATH="$APP_PATH/Contents/MacOS/CLI Monitor"
 PYI_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-$ROOT_DIR/.pyinstaller}"
+BUILD_ASSETS_DIR="$ROOT_DIR/.build_assets"
+RELEASE_PANEL_HTML="$BUILD_ASSETS_DIR/panel.html"
 
 echo "[build] root: $ROOT_DIR"
 echo "[build] spec: $SPEC_FILE"
@@ -13,7 +15,9 @@ echo "[build] pyinstaller config dir: $PYI_CONFIG_DIR"
 
 cd "$ROOT_DIR"
 mkdir -p "$PYI_CONFIG_DIR"
+python3 "$ROOT_DIR/scripts/obfuscate_panel.py" "$ROOT_DIR/panel.html" "$RELEASE_PANEL_HTML"
 export PYINSTALLER_CONFIG_DIR="$PYI_CONFIG_DIR"
+export CLI_MONITOR_PANEL_HTML="$RELEASE_PANEL_HTML"
 pyinstaller --noconfirm "$SPEC_FILE"
 
 if [[ ! -d "$APP_PATH" ]]; then

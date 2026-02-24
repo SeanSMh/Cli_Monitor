@@ -146,6 +146,105 @@ class AnalyzeLogTests(unittest.TestCase):
         text = self.monitor.format_status("DONE", 137)
         self.assertIn("已关闭", text)
 
+    def test_analyze_log_ignores_monitor_meta_in_running_message(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [],
+            meta={
+                "term_program": "vscode",
+                "vscode_pid": "123",
+            },
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_ignores_codex_startup_banner_noise(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "╭────────────────────────╮\n",
+                "│ OpenAI Codex           │\n",
+                "│ Model: gpt-5           │\n",
+                "│ Directory: /tmp/demo   │\n",
+                "╰────────────────────────╯\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_keeps_real_output_after_codex_banner_noise(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "│ Model: gpt-5 │\n",
+                "Generating patch...\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "Generating patch...")
+
+    def test_analyze_log_strips_android_studio_osc_query_residue(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "\x1b]10;?\x1b\\\x1b]11;?\x07✨ Update applied\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "✨ Update applied")
+
+    def test_analyze_log_treats_bare_osc_query_residue_as_noise(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(log, "codex", ["]10;?]11;?\n"])
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_ignores_codex_startup_version_metadata(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "│ Version: 0.42.1 │\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_keeps_runtime_version_message(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "server version mismatch detected\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "server version mismatch detected")
+
 
 if __name__ == "__main__":
     unittest.main()

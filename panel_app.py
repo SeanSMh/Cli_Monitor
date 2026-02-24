@@ -38,6 +38,39 @@ try:
 except ImportError:
     HAS_APPKIT = False
 
+UN_AVAILABLE = False
+UNUserNotificationCenter = None
+UNMutableNotificationContent = None
+UNTimeIntervalNotificationTrigger = None
+UNNotificationRequest = None
+UNNotificationSound = None
+UN_AUTH_OPTIONS = 0
+UN_PRESENT_OPTIONS = 0
+
+if HAS_APPKIT:
+    try:
+        objc.loadBundle(
+            "UserNotifications",
+            globals(),
+            bundle_path="/System/Library/Frameworks/UserNotifications.framework",
+        )
+        UNUserNotificationCenter = objc.lookUpClass("UNUserNotificationCenter")
+        UNMutableNotificationContent = objc.lookUpClass("UNMutableNotificationContent")
+        UNTimeIntervalNotificationTrigger = objc.lookUpClass("UNTimeIntervalNotificationTrigger")
+        UNNotificationRequest = objc.lookUpClass("UNNotificationRequest")
+        try:
+            UNNotificationSound = objc.lookUpClass("UNNotificationSound")
+        except Exception:
+            UNNotificationSound = None
+
+        # UNAuthorizationOptions: badge(1) | sound(2) | alert(4)
+        UN_AUTH_OPTIONS = 1 | 2 | 4
+        # UNNotificationPresentationOptions: sound(2) | banner(16)
+        UN_PRESENT_OPTIONS = 2 | 16
+        UN_AVAILABLE = True
+    except Exception as e:
+        UN_AVAILABLE = False
+
 # 项目路径
 if getattr(sys, "frozen", False):
     SCRIPT_DIR = sys._MEIPASS
@@ -278,21 +311,33 @@ def cleanup_claude_hooks():
         print(f"[CLI Monitor] ⚠️  Claude Hooks 清理失败: {e}")
 
 
+def _normalize_notification_text(text):
+    """原生通知文本清洗，避免控制字符影响显示。"""
+    s = str(text or "")
+    s = s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    s = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", s)
+    return s
+
+
 def send_notification(title, subtitle, message):
-    script = (
-        f'display notification "{message}" '
-        f'with title "{title}" '
-        f'subtitle "{subtitle}" '
-        f'sound name "default"'
-    )
-    try:
-        subprocess.Popen(
-            ["osascript", "-e", script],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+    title = _normalize_notification_text(title)
+    subtitle = _normalize_notification_text(subtitle)
+    message = _normalize_notification_text(message)
+    _log(f"send_notification: title={title!r} subtitle={subtitle!r}")
+    if HAS_APPKIT and _sb_delegate is not None:
+        try:
+            payload = json.dumps(
+                {"title": title, "subtitle": subtitle, "message": message},
+                ensure_ascii=False,
+            )
+            _sb_delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "doDeliverNotification:", payload, False
+            )
+            return
+        except Exception:
+            pass
+    # 不再回退 osascript：回调不可控，点击通知无法稳定唤起面板。
+    _log("send_notification skipped: native notification unavailable")
 
 
 def _extract_pid_from_log_file(log_file):
@@ -326,6 +371,27 @@ def _get_tty_from_pid(pid):
         return ""
 
 
+def _append_monitor_end_if_missing(log_file, exit_code, end_time_str):
+    """为异常终止任务补写 MONITOR_END，避免每次刷新都用当前时间重算时长。"""
+    try:
+        if not log_file or not os.path.exists(log_file):
+            return False
+        tail = ""
+        with open(log_file, "rb") as f:
+            try:
+                f.seek(-512, os.SEEK_END)
+            except OSError:
+                f.seek(0)
+            tail = f.read().decode("utf-8", errors="ignore")
+        if "MONITOR_END:" in tail:
+            return False
+        with open(log_file, "a", encoding="utf-8", errors="ignore") as f:
+            f.write(f"--- MONITOR_END: {int(exit_code)} | {end_time_str} ---\n")
+        return True
+    except Exception:
+        return False
+
+
 def _build_session_meta(log_file):
     meta = parse_session_meta(log_file)
 
@@ -344,6 +410,168 @@ def _build_session_meta(log_file):
     return SessionMeta.from_mapping(meta)
 
 
+def _get_terminal_label(meta):
+    term = str(meta.get("term_program", "") or "").strip().lower()
+    term_ver = str(meta.get("term_program_version", "") or "").strip().lower()
+    vscode_ipc_hook_cli = str(meta.get("vscode_ipc_hook_cli", "") or "").strip().lower()
+    vscode_git_askpass_main = str(meta.get("vscode_git_askpass_main", "") or "").strip().lower()
+    vscode_git_askpass_node = str(meta.get("vscode_git_askpass_node", "") or "").strip().lower()
+    vscode_git_ipc_handle = str(meta.get("vscode_git_ipc_handle", "") or "").strip().lower()
+    vscode_injection = str(meta.get("vscode_injection", "") or "").strip().lower()
+    cursor_trace_id = str(meta.get("cursor_trace_id", "") or "").strip().lower()
+    terminal_emulator = str(meta.get("terminal_emulator", "") or "").strip().lower()
+    jb_name = str(meta.get("jetbrains_ide_name", "") or "").strip().lower()
+    jb_product = str(meta.get("jetbrains_ide_product", "") or "").strip().lower()
+    has_idea_dir = bool(str(meta.get("idea_initial_directory", "") or "").strip())
+    has_as_ver = bool(str(meta.get("android_studio_version", "") or "").strip())
+    vscode_family_markers = " ".join(
+        [
+            term,
+            term_ver,
+            vscode_ipc_hook_cli,
+            vscode_git_askpass_main,
+            vscode_git_askpass_node,
+            vscode_git_ipc_handle,
+            vscode_injection,
+            cursor_trace_id,
+        ]
+    )
+
+    jetbrains_markers = " ".join([term, term_ver, terminal_emulator, jb_name, jb_product])
+    if "cursor" in vscode_family_markers:
+        return "Cursor"
+    if "windsurf" in vscode_family_markers or "codeium" in vscode_family_markers:
+        return "Windsurf"
+    if "trae" in vscode_family_markers:
+        return "Trae"
+    if "vscodium" in vscode_family_markers or "codium" in vscode_family_markers:
+        return "VSCodium"
+    if "insiders" in vscode_family_markers and ("code" in vscode_family_markers or "vscode" in vscode_family_markers):
+        return "VS Code Insiders"
+    if (
+        "android studio" in jetbrains_markers
+        or "androidstudio" in jetbrains_markers
+        or has_as_ver
+    ):
+        return "Android Studio"
+    if (
+        "jediterm" in jetbrains_markers
+        or "jetbrains" in jetbrains_markers
+        or has_idea_dir
+    ):
+        return "JetBrains"
+
+    if "iterm" in term:
+        return "iTerm2"
+    if term in {"apple_terminal", "terminal"}:
+        return "Terminal"
+    if "wezterm" in term or meta.get("wezterm_pane_id"):
+        return "WezTerm"
+    if "warp" in term or meta.get("warp_session_id"):
+        return "Warp"
+    if term in {"vscode", "code"} or meta.get("vscode_pid") or meta.get("vscode_cwd"):
+        return "VS Code"
+    return ""
+
+
+def _append_terminal_hint(text, terminal_label):
+    text = (text or "").strip()
+    terminal_label = (terminal_label or "").strip()
+    if not terminal_label:
+        return text
+    if not text:
+        return terminal_label
+    return f"{text} · {terminal_label}"
+
+
+def _build_card_subtitle(tool_name, status, msg, exit_code, duration, signal_ts, terminal_label):
+    tool_name = str(tool_name or "").strip().lower()
+    msg = str(msg or "").strip()
+
+    if status == "DONE":
+        if duration:
+            return _append_terminal_hint(f"⏱ {duration}", terminal_label)
+        if exit_code == 137:
+            return _append_terminal_hint("终端已关闭", terminal_label)
+        if exit_code > 0:
+            return _append_terminal_hint(f"退出码 {exit_code}", terminal_label)
+        return _append_terminal_hint("任务已结束", terminal_label)
+
+    if status == "WAITING":
+        return _append_terminal_hint(msg or "等待确认输入", terminal_label)
+
+    if status == "IDLE":
+        if tool_name == "claude" and signal_ts and signal_ts > 0:
+            return _append_terminal_hint("AI 已完成回复", terminal_label)
+        return _append_terminal_hint("等待下一步输入", terminal_label)
+
+    # RUNNING / unknown
+    if not msg or msg == "初始化...":
+        return _append_terminal_hint("运行中...", terminal_label)
+    return _append_terminal_hint(msg, terminal_label)
+
+
+def _strip_terminal_hint_suffix(text, terminal_label):
+    text = str(text or "").strip()
+    terminal_label = str(terminal_label or "").strip()
+    if not text or not terminal_label:
+        return text
+    suffix = f" · {terminal_label}"
+    if text.endswith(suffix):
+        return text[:-len(suffix)].rstrip()
+    return text
+
+
+def _notification_status_label(status, exit_code):
+    if status == "DONE":
+        if exit_code == 137:
+            return "已关闭"
+        if exit_code and exit_code > 0:
+            return "异常退出"
+        return "已完成"
+    if status == "WAITING":
+        return "待确认"
+    if status == "IDLE":
+        return "等待输入"
+    return "运行中"
+
+
+def _notification_compact_text(text, limit=72):
+    s = str(text or "")
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"[\x00-\x1f\x7f]", "", s)
+    if len(s) > limit:
+        s = s[: max(0, limit - 1)] + "…"
+    return s
+
+
+def _build_notification_payload(task):
+    status = str(task.get("status", "") or "").strip().upper()
+    exit_code = int(task.get("exit_code", -1) or -1)
+    terminal_label = str(task.get("terminal_label", "") or "").strip()
+    badge = _notification_status_label(status, exit_code)
+
+    subtitle_parts = [badge]
+    if terminal_label:
+        subtitle_parts.append(terminal_label)
+    subtitle = _notification_compact_text(" · ".join(subtitle_parts), 64)
+
+    body = _notification_compact_text(task.get("message", ""), 88)
+    if not body or body in {"初始化...", "[进程已终止]"}:
+        card_subtitle = _strip_terminal_hint_suffix(task.get("subtitle", ""), terminal_label)
+        body = _notification_compact_text(card_subtitle, 88)
+
+    # 避免通知副标题和正文都显示“等待输入”类文案，造成重复感。
+    if status == "IDLE" and body in {"等待输入", "等待下一步输入"}:
+        body = "点击通知打开面板查看详情"
+
+    if not body:
+        body = "点击状态栏打开面板查看详情"
+
+    title = "CLI Monitor"
+    return title, subtitle, body
+
+
 # ===========================================
 # macOS 状态栏图标
 # ===========================================
@@ -351,13 +579,16 @@ def _build_session_meta(log_file):
 
 def update_status_icon(alert_count):
     """更新状态栏图标"""
+    display_count = alert_count
+    if _is_panel_visible_and_frontmost():
+        display_count = 0
     try:
         if HAS_APPKIT and _sb_delegate:
             _sb_delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "doSetStatusIcon:", str(max(0, int(alert_count))), False
+                "doSetStatusIcon:", str(max(0, int(display_count))), False
             )
             return
-        _do_update_status_icon(alert_count)
+        _do_update_status_icon(display_count)
     except Exception:
         pass
 
@@ -368,6 +599,23 @@ if HAS_APPKIT:
         """状态栏点击代理 + 主线程调度"""
 
         @objc.python_method
+        def show_panel(self):
+            global _window_visible, _api
+            if _window is None:
+                return
+            try:
+                _window.show()
+            except Exception:
+                pass
+            _window_visible = True
+            try:
+                NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+            except Exception:
+                pass
+            if _api is not None:
+                _api.clear_unread_notifications()
+
+        @objc.python_method
         def toggle_panel(self):
             global _window_visible, _api
             if _window is None:
@@ -376,17 +624,16 @@ if HAS_APPKIT:
                 _window.hide()
                 _window_visible = False
             else:
-                _window.show()
-                _window_visible = True
-                # 从状态栏打开面板时，未读通知计数清零
-                if _api is not None:
-                    _api.clear_unread_notifications()
+                self.show_panel()
 
         def statusBarClicked_(self, sender):
             self.toggle_panel()
 
         def doTogglePanel_(self, _):
             self.toggle_panel()
+
+        def doShowPanel_(self, _):
+            self.show_panel()
 
         def doSetupStatusBar_(self, _):
             """ObjC selector: 在主线程上执行状态栏创建"""
@@ -398,6 +645,48 @@ if HAS_APPKIT:
                 _do_update_status_icon(int(str(payload)))
             except Exception:
                 _do_update_status_icon(0)
+
+        def doDeliverNotification_(self, payload):
+            """ObjC selector: 在主线程发送原生通知"""
+            try:
+                data = json.loads(str(payload or "{}"))
+            except Exception:
+                data = {}
+            _do_send_native_notification(
+                data.get("title", ""),
+                data.get("subtitle", ""),
+                data.get("message", ""),
+            )
+
+        def userNotificationCenter_willPresentNotification_withCompletionHandler_(self, center, notification, completionHandler):
+            try:
+                # 前台也允许展示通知横幅；“已读”语义由未读角标逻辑控制，不在这里 suppress。
+                options = UN_PRESENT_OPTIONS
+                if completionHandler:
+                    completionHandler(options)
+            except Exception:
+                try:
+                    if completionHandler:
+                        completionHandler(0)
+                except Exception:
+                    pass
+
+        def userNotificationCenter_didReceiveNotificationResponse_withCompletionHandler_(self, center, response, completionHandler):
+            try:
+                self.show_panel()
+            except Exception:
+                pass
+            try:
+                notification = response.notification() if response else None
+                if notification is not None:
+                    center.removeDeliveredNotification_(notification)
+            except Exception:
+                pass
+            try:
+                if completionHandler:
+                    completionHandler()
+            except Exception:
+                pass
 
 
     class ResizeDelegate(NSObject):
@@ -431,6 +720,8 @@ def _do_setup_statusbar():
     )
     _status_item.button().setTarget_(_sb_delegate)
 
+    _setup_notification_center()
+
     print("[CLI Monitor] ✅ 状态栏图标已创建 (主线程)")
 
 
@@ -444,12 +735,75 @@ def _do_update_status_icon(alert_count):
         _status_item.button().setTitle_(f"⚠️{count}" if count > 0 else "🛡️")
 
 
+def _is_panel_visible_and_frontmost():
+    """面板已显示且应用位于前台时，视为用户已经看到，不显示状态栏角标。"""
+    try:
+        if not _window_visible:
+            return False
+        if HAS_APPKIT:
+            return bool(NSApplication.sharedApplication().isActive())
+        return bool(_window_visible)
+    except Exception:
+        return False
+
+
 def _do_resize_window(width, height):
     """实际执行窗口尺寸调整 (必须在主线程调用)"""
     global _window
     if _window is None:
         return
     _window.resize(int(width), int(height))
+
+
+def _setup_notification_center():
+    if not UN_AVAILABLE:
+        _log("UserNotifications 不可用，通知将不可用")
+        return
+    try:
+        center = UNUserNotificationCenter.currentNotificationCenter()
+        center.setDelegate_(_sb_delegate)
+    except Exception as e:
+        _log(f"设置 UNUserNotificationCenter delegate 失败: {e}")
+        return
+
+    try:
+        # PyObjC 这里传 Python 回调需要显式 block 签名；为稳定起见直接传 None。
+        center.requestAuthorizationWithOptions_completionHandler_(UN_AUTH_OPTIONS, None)
+        _log("已发起通知权限请求")
+    except Exception as e:
+        _log(f"请求通知权限失败: {e}")
+
+
+def _do_send_native_notification(title, subtitle, message):
+    """在主线程发送系统通知（UNUserNotificationCenter）；点击通知由 delegate 打开面板。"""
+    if not UN_AVAILABLE:
+        _log("原生通知发送失败: UserNotifications unavailable")
+        return False
+    try:
+        center = UNUserNotificationCenter.currentNotificationCenter()
+        content = UNMutableNotificationContent.alloc().init()
+        content.setTitle_(str(title or ""))
+        if subtitle:
+            content.setSubtitle_(str(subtitle))
+        if message:
+            # UNMutableNotificationContent 使用 body，而不是 informativeText
+            content.setBody_(str(message))
+        if UNNotificationSound is not None:
+            try:
+                content.setSound_(UNNotificationSound.defaultSound())
+            except Exception:
+                pass
+
+        # 使用 1s 触发，兼容系统对过短时间间隔触发器的限制。
+        trigger = UNTimeIntervalNotificationTrigger.triggerWithTimeInterval_repeats_(1.0, False)
+        req_id = f"cli-monitor-{int(time.time() * 1000)}"
+        req = UNNotificationRequest.requestWithIdentifier_content_trigger_(req_id, content, trigger)
+        center.addNotificationRequest_withCompletionHandler_(req, None)
+        _log(f"通知已提交: title={title!r} subtitle={subtitle!r}")
+        return True
+    except Exception as e:
+        _log(f"原生通知发送失败: {e}")
+        return False
 
 
 def setup_statusbar_from_thread():
@@ -570,6 +924,7 @@ class Api:
         self._task_states = {}       # Key: log_file -> last_status
         self._first_run = True       # 启动时不通知
         self._unread_notification_count = 0  # 未读通知数 (用于状态栏角标)
+        self._unread_by_task = {}    # Key: log_file -> unread_count
         self._last_focus_result = {"success": False, "provider": "", "reason": ""}
 
     def get_tasks(self):
@@ -582,6 +937,9 @@ class Api:
         tasks = []
 
         for log_file in log_files[:MAX_TASKS]:
+            meta = parse_session_meta(log_file)
+            terminal_label = _get_terminal_label(meta)
+
             # 接收 6 个返回值 (v2.0 New Signature)
             # tool_name, status, msg, exit_code, duration, signal_ts
             tool_name, status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
@@ -612,12 +970,14 @@ class Api:
                             os.kill(pid, 0)
                         except OSError:
                             # 进程不存在 -> 强制标记为异常结束
+                            ended_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                            _append_monitor_end_if_missing(log_file, 137, ended_at)
                             status = "DONE"
                             exit_code = 137 # SIGKILL
                             msg = "[进程已终止]"
                             # 重新读取 start_time 以计算 duration
                             _, start_time = parse_start_info(log_file)
-                            duration = calculate_duration(start_time, time.strftime('%Y-%m-%d %H:%M:%S'))
+                            duration = calculate_duration(start_time, ended_at)
                             # 顺便清理一下速率历史
                             clear_rate_history(log_file)
                 except Exception:
@@ -627,12 +987,23 @@ class Api:
             msg = re.sub(r"[\x00-\x1f\x7f]", "", msg)
             if len(msg) > 40:
                 msg = msg[:37] + "..."
+            subtitle = _build_card_subtitle(
+                tool_name=tool_name,
+                status=status,
+                msg=msg,
+                exit_code=exit_code,
+                duration=duration,
+                signal_ts=signal_ts,
+                terminal_label=terminal_label,
+            )
 
             tasks.append(
                 {
                     "tool": tool_name,
                     "status": status,
                     "message": msg,
+                    "subtitle": subtitle,
+                    "terminal_label": terminal_label,
                     "exit_code": exit_code,
                     "duration": duration,
                     "log_file": log_file,
@@ -647,7 +1018,28 @@ class Api:
 
     def clear_unread_notifications(self):
         self._unread_notification_count = 0
+        self._unread_by_task.clear()
         update_status_icon(0)
+
+    def _clear_unread_for_task(self, log_file):
+        log_file = str(log_file or "").strip()
+        if not log_file:
+            return 0
+        removed = int(self._unread_by_task.pop(log_file, 0) or 0)
+        if removed > 0:
+            self._unread_notification_count = max(0, self._unread_notification_count - removed)
+            update_status_icon(self._unread_notification_count)
+        return removed
+
+    def _mark_notification_seen_or_unread(self, log_file):
+        # 面板已在前台显示时，认为用户已看到，不累加状态栏角标。
+        if _is_panel_visible_and_frontmost():
+            return
+        log_file = str(log_file or "").strip()
+        if not log_file:
+            return
+        self._unread_notification_count += 1
+        self._unread_by_task[log_file] = int(self._unread_by_task.get(log_file, 0) or 0) + 1
 
     def _check_notifications(self, tasks):
         now = time.time()
@@ -678,9 +1070,10 @@ class Api:
                 key = f"{log_file}:WAITING"
                 if now - self._last_notify_time.get(key, 0) < 5: continue
 
-                send_notification("⚠️ CLI 任务待确认", f"工具: {task['tool']}", task["message"][:60])
+                title, subtitle, body = _build_notification_payload(task)
+                send_notification(title, subtitle, body)
                 self._last_notify_time[key] = now
-                self._unread_notification_count += 1
+                self._mark_notification_seen_or_unread(log_file)
             
             elif status == "IDLE":
                 # IDLE 使用 Signal Timestamp 去重逻辑
@@ -689,11 +1082,12 @@ class Api:
                     last_ts = self._last_signal_ts.get(log_file, 0)
                     if signal_ts > last_ts:
                         # 这是一个新的完成信号 -> 通知
-                        send_notification("🔵 AI 已完成，等待输入", f"工具: {task['tool']}", "AI 已完成回复，等待你的下一步指令")
+                        title, subtitle, body = _build_notification_payload(task)
+                        send_notification(title, subtitle, body)
                         self._last_signal_ts[log_file] = signal_ts
                         # 同时更新 notify time 用于 debounce 兼容
                         self._last_notify_time[f"{log_file}:IDLE"] = now
-                        self._unread_notification_count += 1
+                        self._mark_notification_seen_or_unread(log_file)
                     else:
                         # 信号时间戳未变 -> 说明是同一个完成事件 -> 忽略
                         pass
@@ -710,9 +1104,10 @@ class Api:
                     key = f"{log_file}:IDLE"
                     if now - self._last_notify_time.get(key, 0) < 5: continue
 
-                    send_notification("🔵 任务已完成", f"工具: {task['tool']}", task["message"][:60])
+                    title, subtitle, body = _build_notification_payload(task)
+                    send_notification(title, subtitle, body)
                     self._last_notify_time[key] = now
-                    self._unread_notification_count += 1
+                    self._mark_notification_seen_or_unread(log_file)
 
     def open_logs(self):
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -721,6 +1116,7 @@ class Api:
     def delete_task(self, log_file):
         """删除任务日志文件"""
         try:
+            self._clear_unread_for_task(log_file)
             if os.path.exists(log_file) and log_file.startswith(LOG_DIR):
                 os.remove(log_file)
                 # 清理速率跟踪历史, 避免内存泄漏
@@ -733,6 +1129,8 @@ class Api:
         try:
             if not log_file or not log_file.startswith(LOG_DIR):
                 return False
+            # 点击任务卡片视为用户已读该任务相关通知。
+            self._clear_unread_for_task(log_file)
             meta = _build_session_meta(log_file)
             pid = 0
             try:
@@ -924,7 +1322,7 @@ def main():
         on_top=False,
         frameless=False,
         easy_drag=True,
-        background_color="#0F1118",
+        background_color="#F5F6FA",
     )
     _log("webview.create_window 完成")
 

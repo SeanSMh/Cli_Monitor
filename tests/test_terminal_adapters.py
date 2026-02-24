@@ -1,6 +1,12 @@
 import unittest
 
-from terminal_adapters import FocusResult, SessionMeta, TerminalFocusService
+from terminal_adapters import (
+    FocusResult,
+    SessionMeta,
+    TerminalFocusService,
+    VSCodeTerminalAdapter,
+    _bundle_matches_vscode_family,
+)
 
 
 class _Adapter:
@@ -60,6 +66,71 @@ class TerminalFocusServiceTests(unittest.TestCase):
         result = service.focus_by_tty("/dev/ttys001")
         self.assertTrue(result.success)
         self.assertEqual(result.provider, "A")
+
+    def test_vscode_adapter_skips_jetbrains_android_studio_hint(self):
+        adapter = VSCodeTerminalAdapter()
+        meta = SessionMeta(
+            term_program="vscode",
+            vscode_pid="123",
+            terminal_emulator="JetBrains-JediTerm",
+            jetbrains_ide_name="Android Studio",
+        )
+        self.assertFalse(adapter.match(meta))
+
+    def test_vscode_adapter_skips_cursor_hint(self):
+        adapter = VSCodeTerminalAdapter()
+        meta = SessionMeta(
+            term_program="vscode",
+            vscode_pid="123",
+            vscode_ipc_hook_cli="/Users/x/Library/Application Support/Cursor/cursor.sock",
+        )
+        self.assertFalse(adapter.match(meta))
+
+    def test_vscode_adapter_skips_windsurf_hint(self):
+        adapter = VSCodeTerminalAdapter()
+        meta = SessionMeta(
+            term_program="vscode",
+            vscode_pid="123",
+            vscode_git_askpass_main="/Applications/Windsurf.app/Contents/Resources/app/extensions/git/dist/askpass-main.js",
+        )
+        self.assertFalse(adapter.match(meta))
+
+    def test_vscode_adapter_skips_trae_hint(self):
+        adapter = VSCodeTerminalAdapter()
+        meta = SessionMeta(
+            term_program="vscode",
+            vscode_pid="123",
+            vscode_ipc_hook_cli="/Users/x/Library/Application Support/Trae/1.0-main.sock",
+        )
+        self.assertFalse(adapter.match(meta))
+
+    def test_vscode_family_key_detects_insiders_and_codium(self):
+        insiders = SessionMeta(
+            term_program="vscode",
+            vscode_git_askpass_main="/Applications/Visual Studio Code - Insiders.app/Contents/Resources/app/extensions/git/dist/askpass-main.js",
+        )
+        codium = SessionMeta(
+            term_program="vscode",
+            vscode_ipc_hook_cli="/Users/x/Library/Application Support/VSCodium/1.99-main.sock",
+        )
+        self.assertEqual(insiders.vscode_family_key, "vscode_insiders")
+        self.assertEqual(codium.vscode_family_key, "vscodium")
+
+    def test_bundle_family_match_rejects_antigravity_for_cursor(self):
+        self.assertFalse(
+            _bundle_matches_vscode_family(
+                "/Applications/Antigravity.app",
+                "cursor",
+            )
+        )
+
+    def test_bundle_family_match_accepts_cursor_bundle(self):
+        self.assertTrue(
+            _bundle_matches_vscode_family(
+                "/Applications/Cursor.app",
+                "cursor",
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -56,6 +56,31 @@ BLINK    = "\033[5m"
 CYAN     = "\033[36m"
 DIM      = "\033[2m"
 
+SYSTEM_LINE_PREFIXES = (
+    "--- MONITOR_START:",
+    "--- MONITOR_META ",
+    "--- MONITOR_END:",
+    "Script started on ",
+    "Script done on ",
+)
+
+DISPLAY_NOISE_PATTERNS_COMMON = (
+    r"^\s*$",
+    r"^(?:shell integration loaded|loading shell integration)\b",
+    r"^(?:jediterm|jetbrains).{0,120}$",
+    r"^(?:\]\d{1,3};\?)+$",
+)
+
+DISPLAY_NOISE_PATTERNS_BY_TOOL = {
+    "codex": (
+        # Codex CLI 启动 banner / box drawing
+        r"^[\s╭╮╰╯│─┌┐└┘┬┴├┤┼═║╔╗╚╝]+$",
+        r"^[│\s]*(?:OpenAI\s+Codex|Codex)\b.*$",
+        r"^[│\s]*(?:Model|Directory|Approval|Sandbox|Profile|Workspace|Version|Session|Agent|Config|Provider)\s*:\s*.*$",
+        r"^[│\s]*Press .* to .*",
+    ),
+}
+
 
 # === 核心工具函数 ===
 
@@ -140,6 +165,17 @@ def parse_session_meta(filepath, max_lines=24):
         "warp_session_id": "",
         "vscode_pid": "",
         "vscode_cwd": "",
+        "vscode_ipc_hook_cli": "",
+        "vscode_git_askpass_main": "",
+        "vscode_git_askpass_node": "",
+        "vscode_git_ipc_handle": "",
+        "vscode_injection": "",
+        "cursor_trace_id": "",
+        "terminal_emulator": "",
+        "idea_initial_directory": "",
+        "jetbrains_ide_name": "",
+        "jetbrains_ide_product": "",
+        "android_studio_version": "",
     }
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
@@ -186,6 +222,48 @@ def parse_end_info(lines):
             end_time = time_match.group(1).strip() if time_match else ""
             return True, exit_code, end_time
     return False, -1, ""
+
+
+def strip_ansi_text(s):
+    s = re.sub(r'\033\[[0-9;?]*[A-Za-z]', '', s)
+    # OSC 序列可用 BEL 或 ST(ESC \\) 结束；JetBrains/JediTerm 常见颜色查询会走这里。
+    s = re.sub(r'\033\][^\x07\x1b]*(?:\x07|\033\\)', '', s)
+    s = re.sub(r'\033\[[=>][0-9;]*[A-Za-z]', '', s)
+    s = re.sub(r'\033[()][A-Z0-9]', '', s)
+    # 某些终端会留下裸露的 OSC 查询残片（如 ]10;?]11;?），显示层直接剔除。
+    s = re.sub(r'(?:\]\d{1,3};\?)+', '', s)
+    return s
+
+
+def is_system_output_line(line):
+    try:
+        stripped = strip_ansi_text(line).strip()
+    except Exception:
+        return False
+    if not stripped:
+        return False
+    return any(stripped.startswith(prefix) for prefix in SYSTEM_LINE_PREFIXES)
+
+
+def is_display_noise_line(line, tool_name=""):
+    try:
+        stripped = strip_ansi_text(line).strip()
+    except Exception:
+        return False
+    if not stripped:
+        return True
+    if is_system_output_line(stripped):
+        return True
+
+    for pattern in DISPLAY_NOISE_PATTERNS_COMMON:
+        if re.search(pattern, stripped, re.IGNORECASE):
+            return True
+
+    tool_key = str(tool_name or "").strip().lower()
+    for pattern in DISPLAY_NOISE_PATTERNS_BY_TOOL.get(tool_key, ()):
+        if re.search(pattern, stripped, re.IGNORECASE):
+            return True
+    return False
 
 
 def calculate_duration(start_time, end_time):
@@ -285,22 +363,19 @@ def analyze_log(filepath):
     done_patterns = tool_rules.get("done_patterns", {})
     tail_lines = lines[-5:]
     
-    def strip_ansi(s):
-        s = re.sub(r'\033\[[0-9;?]*[A-Za-z]', '', s)
-        s = re.sub(r'\033\][^\007]*\007', '', s)
-        s = re.sub(r'\033\[[=>][0-9;]*[A-Za-z]', '', s)
-        s = re.sub(r'\033[()][A-Z0-9]', '', s)
-        return s
-
-    clean_lines = [strip_ansi(l) for l in tail_lines]
-    context = "".join(clean_lines)
+    clean_lines = [strip_ansi_text(l) for l in tail_lines]
+    visible_lines = [l for l in clean_lines if not is_system_output_line(l)]
+    display_lines = [l for l in visible_lines if not is_display_noise_line(l, tool_name)]
+    context = "".join(visible_lines)
     
     last_line = ""
-    for l in reversed(clean_lines):
+    for l in reversed(display_lines):
         if l.strip():
             last_line = l.strip()
             last_line = re.sub(r'[\x00-\x1f\x7f]', '', last_line)
             break
+    if not last_line:
+        last_line = "运行中..."
 
     for pattern, msg in done_patterns.items():
         if re.search(pattern, context, re.IGNORECASE):
@@ -319,7 +394,7 @@ def analyze_log(filepath):
     common_waiting = RULES_CONF.get("common", {}).get("waiting", [])
     for pattern in common_waiting:
         if re.search(pattern, context, re.IGNORECASE):
-            for line in reversed(clean_lines):
+            for line in reversed(visible_lines):
                 stripped = line.strip()
                 stripped = re.sub(r'[\x00-\x1f\x7f]', '', stripped)
                 if re.search(pattern, stripped, re.IGNORECASE):
@@ -355,7 +430,9 @@ def analyze_log(filepath):
 
         if not busy_in_tail and idle_seconds > 10: 
              broad_lines = lines[-30:] if len(lines) >= 30 else lines
-             broad_context = "".join([strip_ansi(l) for l in broad_lines])
+             broad_context = "".join(
+                 [strip_ansi_text(l) for l in broad_lines if not is_system_output_line(l)]
+             )
              if any(re.search(p, broad_context, re.IGNORECASE) for p in busy_patterns):
                  return tool_name, "IDLE", "AI 已完成回复", -1, "", 0
 
