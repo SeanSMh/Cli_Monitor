@@ -30,6 +30,7 @@ try:
         NSVariableStatusItemLength,
         NSApplication,
         NSApplicationActivationPolicyAccessory,
+        NSImage,
     )
     from Foundation import NSObject
     import objc
@@ -128,6 +129,7 @@ _status_item = None
 _sb_delegate = None
 _resize_delegate = None
 _api = None
+_status_icon_image = None
 _terminal_focus_service = TerminalFocusService()
 E2E_MODE = os.environ.get("CLI_MONITOR_E2E", "0") == "1"
 E2E_HOST = os.environ.get("CLI_MONITOR_E2E_HOST", "127.0.0.1")
@@ -703,7 +705,7 @@ if HAS_APPKIT:
 
 def _do_setup_statusbar():
     """实际创建状态栏图标 (仅在主线程调用)"""
-    global _status_item, _sb_delegate
+    global _status_item, _sb_delegate, _status_icon_image
 
     # 无 Dock 图标，纯状态栏应用
     NSApplication.sharedApplication().setActivationPolicy_(
@@ -712,7 +714,14 @@ def _do_setup_statusbar():
 
     status_bar = NSStatusBar.systemStatusBar()
     _status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
-    _status_item.button().setTitle_("🛡️")
+    _status_icon_image = _load_statusbar_icon_image()
+    if _status_item.button() is not None:
+        if _status_icon_image is not None:
+            try:
+                _status_item.button().setImage_(_status_icon_image)
+            except Exception:
+                pass
+        _status_item.button().setTitle_("")
 
     # 绑定点击事件
     _status_item.button().setAction_(
@@ -732,7 +741,17 @@ def _do_update_status_icon(alert_count):
             count = max(0, int(alert_count))
         except Exception:
             count = 0
-        _status_item.button().setTitle_(f"⚠️{count}" if count > 0 else "🛡️")
+        btn = _status_item.button()
+        if btn is None:
+            return
+        if _status_icon_image is not None:
+            try:
+                btn.setImage_(_status_icon_image)
+            except Exception:
+                pass
+            btn.setTitle_(f" {count}" if count > 0 else "")
+            return
+        btn.setTitle_(f"⚠️{count}" if count > 0 else "🛡️")
 
 
 def _is_panel_visible_and_frontmost():
@@ -753,6 +772,33 @@ def _do_resize_window(width, height):
     if _window is None:
         return
     _window.resize(int(width), int(height))
+
+
+def _load_statusbar_icon_image():
+    """加载菜单栏图标，优先使用 assets/app_icon.png，失败时回退应用图标。"""
+    if not HAS_APPKIT:
+        return None
+    try:
+        icon_path = os.path.join(SCRIPT_DIR, "assets", "app_icon.png")
+        img = None
+        if os.path.exists(icon_path):
+            img = NSImage.alloc().initWithContentsOfFile_(icon_path)
+        if img is None:
+            img = NSApplication.sharedApplication().applicationIconImage()
+        if img is None:
+            return None
+        try:
+            img.setTemplate_(False)
+        except Exception:
+            pass
+        try:
+            img.setSize_((18, 18))
+        except Exception:
+            pass
+        return img
+    except Exception as e:
+        _log(f"加载状态栏图标失败: {e}")
+        return None
 
 
 def _setup_notification_center():
@@ -1062,6 +1108,11 @@ class Api:
             
             # 更新状态记录
             self._task_states[log_file] = status
+
+            # 用户在终端里继续操作后，任务通常会从 WAITING/IDLE 回到 RUNNING。
+            # 这说明对应提醒已被处理，自动清理该任务未读计数。
+            if status == "RUNNING" and prev_status in {"WAITING", "IDLE"}:
+                self._clear_unread_for_task(log_file)
 
             if status == "WAITING":
                 # WAITING 仍使用 Edge Trigger + Debounce

@@ -220,22 +220,6 @@
             letter-spacing: 0.02em;
         }
 
-        .launch-credit {
-            margin-top: 12px;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 10px;
-            border-radius: 999px;
-            color: #1D4ED8;
-            background: rgba(37, 99, 235, 0.08);
-            border: 1px solid rgba(37, 99, 235, 0.12);
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-        }
-
         .launch-progress {
             margin-top: 14px;
             height: 4px;
@@ -546,19 +530,44 @@
             width: 36px;
             height: 36px;
             border-radius: 10px;
-            background: linear-gradient(135deg, var(--green), var(--blue));
+            background: transparent;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 18px;
-            box-shadow: 0 2px 8px rgba(52, 211, 153, 0.2);
+            box-shadow: none;
             transition: all 0.3s;
+            overflow: hidden;
+        }
+
+        .brand-icon-img {
+            width: 100%;
+            height: 100%;
+            display: block;
+            object-fit: cover;
+            border-radius: inherit;
+        }
+
+        .header-title-row {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
         }
 
         .header-title {
             font-size: 16px;
             font-weight: 700;
             letter-spacing: 0.3px;
+        }
+
+        .header-credit {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-tertiary);
+            opacity: 0.9;
+            user-select: none;
         }
 
         .header-subtitle {
@@ -926,13 +935,14 @@
             width: 64px;
             height: 64px;
             border-radius: 16px;
-            background: linear-gradient(135deg, var(--green-bg), var(--blue-bg));
-            border: 1px solid var(--border-card);
+            background: transparent;
+            border: none;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 28px;
             margin: 0 auto 16px;
+            overflow: hidden;
         }
 
         .empty-title {
@@ -1014,19 +1024,21 @@
 <body>
     <div class="launch-splash" id="launchSplash" data-testid="launch-splash">
         <div class="launch-splash-card">
-            <div class="launch-logo">🛡</div>
+            <div class="launch-logo"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
             <div class="launch-title">CLI Monitor</div>
             <div class="launch-subtitle">启动中 · 初始化任务面板</div>
-            <div class="launch-credit">By Bril</div>
             <div class="launch-progress" aria-hidden="true"></div>
         </div>
     </div>
 
     <div class="header">
         <div class="header-left">
-            <div class="header-icon">🛡</div>
+            <div class="header-icon"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
             <div>
-                <div class="header-title">CLI Monitor</div>
+                <div class="header-title-row">
+                    <div class="header-title">CLI Monitor</div>
+                    <div class="header-credit">By Bril</div>
+                </div>
                 <div class="header-subtitle" id="subtitle">加载中...</div>
             </div>
         </div>
@@ -1039,7 +1051,7 @@
     <div class="task-grid" id="taskGrid" data-testid="task-grid">
         <!-- 动态内容 -->
         <div class="empty-state" data-testid="empty-state">
-            <div class="empty-graphic" data-testid="empty-icon">🛡</div>
+            <div class="empty-graphic" data-testid="empty-icon"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
             <div class="empty-title" data-testid="empty-title">加载中...</div>
         </div>
     </div>
@@ -1093,7 +1105,7 @@
                 sub.textContent = '';
                 grid.innerHTML = `
         <div class="empty-state" data-testid="empty-state">
-          <div class="empty-graphic" data-testid="empty-icon">🛡</div>
+          <div class="empty-graphic" data-testid="empty-icon"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
           <div class="empty-title" data-testid="empty-title">暂无活跃任务</div>
           <div class="empty-sub" data-testid="empty-sub">在终端中运行 codex、claude 等命令<br>即可自动开始监控</div>
         </div>`;
