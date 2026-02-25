@@ -77,6 +77,7 @@ DISPLAY_NOISE_PATTERNS_BY_TOOL = {
         r"^[\s╭╮╰╯│─┌┐└┘┬┴├┤┼═║╔╗╚╝]+$",
         r"^[│\s]*(?:OpenAI\s+Codex|Codex)\b.*$",
         r"^[│\s]*(?:Model|Directory|Approval|Sandbox|Profile|Workspace|Version|Session|Agent|Config|Provider)\s*:\s*.*$",
+        r"^[│\s]*You are in\s+/.+$",
         r"^[│\s]*Press .* to .*",
     ),
 }

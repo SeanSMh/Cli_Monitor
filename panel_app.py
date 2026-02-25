@@ -106,6 +106,49 @@ from terminal_adapters import SessionMeta, TerminalFocusService
 LOG_DIR = os.environ.get("AI_MONITOR_DIR", DEFAULT_LOG_DIR)
 MAX_TASKS = 8
 PANEL_HTML = os.path.join(SCRIPT_DIR, "panel.html")
+APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/CLI Monitor")
+SETTINGS_FILE = os.path.join(APP_SUPPORT_DIR, "settings.json")
+DEFAULT_LANGUAGE = "zh-CN"
+SUPPORTED_LANGUAGES = ("zh-CN", "en-US")
+
+I18N = {
+    "zh-CN": {
+        "badge.running": "运行中",
+        "badge.waiting": "待确认",
+        "badge.idle": "等待输入",
+        "badge.done": "已完成",
+        "badge.closed": "已关闭",
+        "badge.error": "异常退出",
+        "badge.ended": "已结束",
+        "subtitle.done.closed": "终端已关闭",
+        "subtitle.done.exit_code": "退出码 {code}",
+        "subtitle.done.ended": "任务已结束",
+        "subtitle.waiting.fallback": "等待确认输入",
+        "subtitle.idle.ai_done": "AI 已完成回复",
+        "subtitle.idle.wait_next": "等待下一步输入",
+        "subtitle.running.fallback": "运行中...",
+        "notify.body.open_detail": "点击通知打开面板查看详情",
+        "notify.body.open_panel": "点击状态栏打开面板查看详情",
+    },
+    "en-US": {
+        "badge.running": "Running",
+        "badge.waiting": "Needs Action",
+        "badge.idle": "Awaiting Input",
+        "badge.done": "Completed",
+        "badge.closed": "Closed",
+        "badge.error": "Failed",
+        "badge.ended": "Ended",
+        "subtitle.done.closed": "Terminal closed",
+        "subtitle.done.exit_code": "Exit code {code}",
+        "subtitle.done.ended": "Task ended",
+        "subtitle.waiting.fallback": "Awaiting confirmation",
+        "subtitle.idle.ai_done": "AI response finished",
+        "subtitle.idle.wait_next": "Waiting for next input",
+        "subtitle.running.fallback": "Running...",
+        "notify.body.open_detail": "Click notification to open panel details",
+        "notify.body.open_panel": "Click the menu bar icon to open the panel",
+    },
+}
 
 # 临时注入
 TEMP_WRAPPER = "/tmp/cli_monitor_session.sh"
@@ -135,6 +178,79 @@ E2E_MODE = os.environ.get("CLI_MONITOR_E2E", "0") == "1"
 E2E_HOST = os.environ.get("CLI_MONITOR_E2E_HOST", "127.0.0.1")
 E2E_PORT = int(os.environ.get("CLI_MONITOR_E2E_PORT", "18787"))
 _e2e_server = None
+_settings_lock = threading.Lock()
+_settings_cache = None
+
+
+def _normalize_language(lang):
+    value = str(lang or "").strip()
+    if value in SUPPORTED_LANGUAGES:
+        return value
+    lower = value.lower()
+    if lower in {"zh", "zh-cn", "zh_hans", "zh-hans"}:
+        return "zh-CN"
+    if lower in {"en", "en-us", "en_us"}:
+        return "en-US"
+    return DEFAULT_LANGUAGE
+
+
+def _read_settings_locked():
+    settings = {"language": DEFAULT_LANGUAGE}
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                settings.update(data)
+    except Exception as e:
+        _log(f"读取设置失败: {e}")
+    settings["language"] = _normalize_language(settings.get("language"))
+    return settings
+
+
+def _write_settings_locked(settings):
+    try:
+        os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        _log(f"写入设置失败: {e}")
+
+
+def get_app_settings():
+    global _settings_cache
+    with _settings_lock:
+        if _settings_cache is None:
+            _settings_cache = _read_settings_locked()
+        return dict(_settings_cache)
+
+
+def get_current_language():
+    return _normalize_language(get_app_settings().get("language"))
+
+
+def set_current_language(lang):
+    global _settings_cache
+    normalized = _normalize_language(lang)
+    with _settings_lock:
+        settings = _read_settings_locked() if _settings_cache is None else dict(_settings_cache)
+        settings["language"] = normalized
+        _settings_cache = settings
+        _write_settings_locked(settings)
+    return normalized
+
+
+def _t(key, lang=None, **kwargs):
+    lang_key = _normalize_language(lang or get_current_language())
+    value = I18N.get(lang_key, {}).get(key)
+    if value is None:
+        value = I18N.get(DEFAULT_LANGUAGE, {}).get(key, key)
+    if kwargs:
+        try:
+            return str(value).format(**kwargs)
+        except Exception:
+            return str(value)
+    return str(value)
 
 
 # ===========================================
@@ -486,31 +602,33 @@ def _append_terminal_hint(text, terminal_label):
     return f"{text} · {terminal_label}"
 
 
-def _build_card_subtitle(tool_name, status, msg, exit_code, duration, signal_ts, terminal_label):
+def _build_card_subtitle(tool_name, status, msg, exit_code, duration, signal_ts, terminal_label, lang=None):
     tool_name = str(tool_name or "").strip().lower()
     msg = str(msg or "").strip()
+    lang = _normalize_language(lang or get_current_language())
+    translated_msg = _translate_system_message_for_display(msg, lang)
 
     if status == "DONE":
         if duration:
             return _append_terminal_hint(f"⏱ {duration}", terminal_label)
         if exit_code == 137:
-            return _append_terminal_hint("终端已关闭", terminal_label)
+            return _append_terminal_hint(_t("subtitle.done.closed", lang), terminal_label)
         if exit_code > 0:
-            return _append_terminal_hint(f"退出码 {exit_code}", terminal_label)
-        return _append_terminal_hint("任务已结束", terminal_label)
+            return _append_terminal_hint(_t("subtitle.done.exit_code", lang, code=exit_code), terminal_label)
+        return _append_terminal_hint(_t("subtitle.done.ended", lang), terminal_label)
 
     if status == "WAITING":
-        return _append_terminal_hint(msg or "等待确认输入", terminal_label)
+        return _append_terminal_hint(msg or _t("subtitle.waiting.fallback", lang), terminal_label)
 
     if status == "IDLE":
         if tool_name == "claude" and signal_ts and signal_ts > 0:
-            return _append_terminal_hint("AI 已完成回复", terminal_label)
-        return _append_terminal_hint("等待下一步输入", terminal_label)
+            return _append_terminal_hint(_t("subtitle.idle.ai_done", lang), terminal_label)
+        return _append_terminal_hint(_t("subtitle.idle.wait_next", lang), terminal_label)
 
     # RUNNING / unknown
-    if not msg or msg == "初始化...":
-        return _append_terminal_hint("运行中...", terminal_label)
-    return _append_terminal_hint(msg, terminal_label)
+    if not translated_msg or translated_msg in {"初始化...", "Initializing..."}:
+        return _append_terminal_hint(_t("subtitle.running.fallback", lang), terminal_label)
+    return _append_terminal_hint(translated_msg, terminal_label)
 
 
 def _strip_terminal_hint_suffix(text, terminal_label):
@@ -524,18 +642,41 @@ def _strip_terminal_hint_suffix(text, terminal_label):
     return text
 
 
-def _notification_status_label(status, exit_code):
+def _notification_status_label(status, exit_code, lang=None):
+    lang = _normalize_language(lang or get_current_language())
     if status == "DONE":
         if exit_code == 137:
-            return "已关闭"
+            return _t("badge.closed", lang)
         if exit_code and exit_code > 0:
-            return "异常退出"
-        return "已完成"
+            return _t("badge.error", lang)
+        return _t("badge.done", lang)
     if status == "WAITING":
-        return "待确认"
+        return _t("badge.waiting", lang)
     if status == "IDLE":
-        return "等待输入"
-    return "运行中"
+        return _t("badge.idle", lang)
+    return _t("badge.running", lang)
+
+
+def _card_badge_label(status, exit_code, lang=None):
+    status = str(status or "").upper()
+    try:
+        exit_code = int(exit_code)
+    except Exception:
+        exit_code = -1
+    lang = _normalize_language(lang or get_current_language())
+    if status == "DONE":
+        if exit_code == 137:
+            return _t("badge.closed", lang)
+        if exit_code > 0:
+            return _t("badge.error", lang)
+        if exit_code < 0:
+            return _t("badge.ended", lang)
+        return _t("badge.done", lang)
+    if status == "WAITING":
+        return _t("badge.waiting", lang)
+    if status == "IDLE":
+        return _t("badge.idle", lang)
+    return _t("badge.running", lang)
 
 
 def _notification_compact_text(text, limit=72):
@@ -547,28 +688,47 @@ def _notification_compact_text(text, limit=72):
     return s
 
 
+def _translate_system_message_for_display(text, lang=None):
+    s = str(text or "").strip()
+    if not s:
+        return s
+    lang = _normalize_language(lang or get_current_language())
+    mapping = {
+        "初始化...": _t("subtitle.running.fallback", lang),
+        "运行中...": _t("subtitle.running.fallback", lang),
+        "等待输入": _t("badge.idle", lang),
+        "等待下一步输入": _t("subtitle.idle.wait_next", lang),
+        "AI 已完成回复": _t("subtitle.idle.ai_done", lang),
+        "任务完成": _t("badge.done", lang),
+        "任务已结束": _t("subtitle.done.ended", lang),
+        "终端已关闭": _t("subtitle.done.closed", lang),
+    }
+    return mapping.get(s, s)
+
+
 def _build_notification_payload(task):
+    lang = get_current_language()
     status = str(task.get("status", "") or "").strip().upper()
     exit_code = int(task.get("exit_code", -1) or -1)
     terminal_label = str(task.get("terminal_label", "") or "").strip()
-    badge = _notification_status_label(status, exit_code)
+    badge = _notification_status_label(status, exit_code, lang)
 
     subtitle_parts = [badge]
     if terminal_label:
         subtitle_parts.append(terminal_label)
     subtitle = _notification_compact_text(" · ".join(subtitle_parts), 64)
 
-    body = _notification_compact_text(task.get("message", ""), 88)
-    if not body or body in {"初始化...", "[进程已终止]"}:
+    body = _notification_compact_text(_translate_system_message_for_display(task.get("message", ""), lang), 88)
+    if not body or body in {"初始化...", "Initializing...", "[进程已终止]", "[Process Terminated]"}:
         card_subtitle = _strip_terminal_hint_suffix(task.get("subtitle", ""), terminal_label)
         body = _notification_compact_text(card_subtitle, 88)
 
     # 避免通知副标题和正文都显示“等待输入”类文案，造成重复感。
-    if status == "IDLE" and body in {"等待输入", "等待下一步输入"}:
-        body = "点击通知打开面板查看详情"
+    if status == "IDLE" and body in {_t("badge.idle", lang), _t("subtitle.idle.wait_next", lang)}:
+        body = _t("notify.body.open_detail", lang)
 
     if not body:
-        body = "点击状态栏打开面板查看详情"
+        body = _t("notify.body.open_panel", lang)
 
     title = "CLI Monitor"
     return title, subtitle, body
@@ -973,6 +1133,21 @@ class Api:
         self._unread_by_task = {}    # Key: log_file -> unread_count
         self._last_focus_result = {"success": False, "provider": "", "reason": ""}
 
+    def get_settings(self):
+        settings = get_app_settings()
+        return {
+            "language": _normalize_language(settings.get("language")),
+            "supported_languages": list(SUPPORTED_LANGUAGES),
+        }
+
+    def set_language(self, lang):
+        applied = set_current_language(lang)
+        return {
+            "ok": True,
+            "language": applied,
+            "supported_languages": list(SUPPORTED_LANGUAGES),
+        }
+
     def get_tasks(self):
         if not os.path.exists(LOG_DIR):
             return []
@@ -981,6 +1156,7 @@ class Api:
         log_files.sort(key=os.path.getmtime, reverse=True)
 
         tasks = []
+        lang = get_current_language()
 
         for log_file in log_files[:MAX_TASKS]:
             meta = parse_session_meta(log_file)
@@ -1041,7 +1217,9 @@ class Api:
                 duration=duration,
                 signal_ts=signal_ts,
                 terminal_label=terminal_label,
+                lang=lang,
             )
+            display_badge = _card_badge_label(status, exit_code, lang)
 
             tasks.append(
                 {
@@ -1049,6 +1227,7 @@ class Api:
                     "status": status,
                     "message": msg,
                     "subtitle": subtitle,
+                    "display_badge": display_badge,
                     "terminal_label": terminal_label,
                     "exit_code": exit_code,
                     "duration": duration,

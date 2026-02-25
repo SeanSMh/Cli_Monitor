@@ -231,6 +231,20 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "RUNNING")
         self.assertEqual(msg, "运行中...")
 
+    def test_analyze_log_ignores_codex_you_are_in_startup_hint(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "You are in /Users/sqb/projects/cli-monitor\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
     def test_analyze_log_keeps_runtime_version_message(self):
         log = self.tmp_path / "logs" / "codex_1_2_3.log"
         _write_log(

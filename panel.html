@@ -602,6 +602,17 @@
             line-height: 1;
         }
 
+        .settings-icon {
+            width: 16px;
+            height: 16px;
+            display: block;
+            color: inherit;
+        }
+
+        .settings-icon * {
+            vector-effect: non-scaling-stroke;
+        }
+
         @keyframes refresh-spin {
             from {
                 transform: rotate(0deg);
@@ -610,6 +621,129 @@
             to {
                 transform: rotate(360deg);
             }
+        }
+
+        .settings-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.18);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+            z-index: 30;
+        }
+
+        .settings-overlay.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .settings-panel {
+            position: absolute;
+            top: 54px;
+            right: 0;
+            width: 260px;
+            border-radius: 14px;
+            border: 1px solid var(--border-card);
+            background: var(--bg-card);
+            box-shadow: 0 14px 32px rgba(15, 23, 42, 0.18);
+            padding: 12px;
+            transform: translateY(-6px) scale(0.98);
+            opacity: 0;
+            transition: transform 0.18s ease, opacity 0.18s ease;
+            -webkit-app-region: no-drag;
+        }
+
+        .settings-overlay.open .settings-panel {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+        }
+
+        .settings-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .settings-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .settings-close {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-elevated);
+            color: var(--text-secondary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .settings-close:hover {
+            color: var(--text-primary);
+            border-color: var(--border-card);
+        }
+
+        .settings-group {
+            border: 1px solid var(--border-subtle);
+            border-radius: 12px;
+            padding: 10px;
+            background: var(--bg-elevated);
+        }
+
+        .settings-label {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .lang-options {
+            display: grid;
+            gap: 8px;
+        }
+
+        .lang-option {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            width: 100%;
+            padding: 9px 10px;
+            border-radius: 10px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .lang-option:hover {
+            border-color: var(--border-card);
+            color: var(--text-primary);
+        }
+
+        .lang-option.active {
+            border-color: rgba(59, 130, 246, 0.32);
+            background: rgba(59, 130, 246, 0.08);
+            color: var(--text-primary);
+        }
+
+        .lang-option-check {
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+
+        .lang-option.active .lang-option-check {
+            opacity: 1;
         }
 
         /* ===== 任务网格 ===== */
@@ -1020,12 +1154,19 @@
             <div class="header-icon"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
             <div>
                 <div class="header-title">CLI Monitor</div>
-                <div class="header-subtitle" id="subtitle">加载中...</div>
+                <div class="header-subtitle" id="subtitle" data-state="loading">加载中...</div>
             </div>
         </div>
         <div class="header-actions">
             <button class="btn-icon" onclick="toggleTheme(event)" title="切换主题" id="themeBtn" data-testid="theme-btn">☀️</button>
             <button class="btn-icon" onclick="manualRefresh()" title="刷新" id="refreshBtn" data-testid="refresh-btn"><span class="refresh-icon">↻</span></button>
+            <button class="btn-icon" onclick="toggleSettings()" title="设置" id="settingsBtn" data-testid="settings-btn" aria-label="设置">
+                <svg class="settings-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="7.1"/>
+                    <circle cx="12" cy="12" r="2.9"/>
+                    <path d="M12 2.9v2.2M12 18.9v2.2M21.1 12h-2.2M5.1 12H2.9M18.44 5.56l-1.56 1.56M7.12 16.88l-1.56 1.56M18.44 18.44l-1.56-1.56M7.12 7.12L5.56 5.56"/>
+                </svg>
+            </button>
         </div>
     </div>
 
@@ -1033,15 +1174,37 @@
         <!-- 动态内容 -->
         <div class="empty-state" data-testid="empty-state">
             <div class="empty-graphic" data-testid="empty-icon"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
-            <div class="empty-title" data-testid="empty-title">加载中...</div>
+            <div class="empty-title" data-testid="empty-title" data-state="loading">加载中...</div>
         </div>
     </div>
 
     <div class="footer">
         <div class="footer-left">
-            <button class="btn icon-only" onclick="clearDone()" title="清除已完成" data-testid="clear-done-btn">🗑</button>
+            <button class="btn icon-only" onclick="clearDone()" title="清除已完成" id="clearDoneBtn" data-testid="clear-done-btn">🗑</button>
         </div>
-        <button class="btn quit icon-only" onclick="quit()" title="退出" data-testid="quit-btn">⏻</button>
+        <button class="btn quit icon-only" onclick="quit()" title="退出" id="quitBtn" data-testid="quit-btn">⏻</button>
+    </div>
+
+    <div class="settings-overlay" id="settingsOverlay" data-testid="settings-overlay" onclick="if (event.target === this) closeSettings()">
+        <div class="settings-panel" data-testid="settings-panel" onclick="event.stopPropagation()">
+            <div class="settings-head">
+                <div class="settings-title" id="settingsTitle">设置</div>
+                <button class="settings-close" id="settingsCloseBtn" title="关闭" onclick="closeSettings()">×</button>
+            </div>
+            <div class="settings-group">
+                <div class="settings-label" id="languageLabel">语言</div>
+                <div class="lang-options">
+                    <button class="lang-option" id="langOptionZh" data-testid="lang-option-zh" onclick="selectLanguage('zh-CN')">
+                        <span id="langOptionZhLabel">中文（简体）</span>
+                        <span class="lang-option-check">✓</span>
+                    </button>
+                    <button class="lang-option" id="langOptionEn" data-testid="lang-option-en" onclick="selectLanguage('en-US')">
+                        <span id="langOptionEnLabel">English</span>
+                        <span class="lang-option-check">✓</span>
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -1050,10 +1213,140 @@
         const launchSplashStartedAt = Date.now();
         let launchSplashClosed = false;
         let launchSplashClosingScheduled = false;
+        let currentLanguage = (() => {
+            try {
+                const cached = localStorage.getItem('cli-monitor-language');
+                return cached === 'en-US' ? 'en-US' : 'zh-CN';
+            } catch (e) {
+                return 'zh-CN';
+            }
+        })();
+
+        const I18N = {
+            'zh-CN': {
+                ui_loading: '加载中...',
+                ui_header_summary: '{active} 个活跃 · 共 {total} 个任务',
+                ui_empty_title: '暂无活跃任务',
+                ui_empty_sub: '在终端中运行 codex、claude 等命令<br>即可自动开始监控',
+                ui_launch_subtitle: '启动中 · 初始化任务面板',
+                ui_btn_theme: '切换主题',
+                ui_btn_refresh: '刷新',
+                ui_btn_settings: '设置',
+                ui_btn_clear_done: '清除已完成',
+                ui_btn_quit: '退出',
+                ui_btn_close: '关闭',
+                ui_btn_delete_task: '删除任务',
+                settings_title: '设置',
+                settings_language: '语言',
+                settings_lang_zh: '中文（简体）',
+                settings_lang_en: 'English',
+                badge_running: '运行中',
+                badge_idle: '等待输入',
+                badge_waiting: '待确认',
+                badge_done: '已完成',
+                badge_error: '异常退出',
+                badge_closed: '已关闭',
+                badge_ended: '已结束',
+            },
+            'en-US': {
+                ui_loading: 'Loading...',
+                ui_header_summary: '{active} active · {total} tasks',
+                ui_empty_title: 'No active tasks',
+                ui_empty_sub: 'Run codex, claude and other monitored commands in your terminal<br>to start monitoring automatically',
+                ui_launch_subtitle: 'Starting · Initializing task panel',
+                ui_btn_theme: 'Toggle theme',
+                ui_btn_refresh: 'Refresh',
+                ui_btn_settings: 'Settings',
+                ui_btn_clear_done: 'Clear completed',
+                ui_btn_quit: 'Quit',
+                ui_btn_close: 'Close',
+                ui_btn_delete_task: 'Delete task',
+                settings_title: 'Settings',
+                settings_language: 'Language',
+                settings_lang_zh: 'Chinese (Simplified)',
+                settings_lang_en: 'English',
+                badge_running: 'Running',
+                badge_idle: 'Awaiting Input',
+                badge_waiting: 'Needs Action',
+                badge_done: 'Completed',
+                badge_error: 'Failed',
+                badge_closed: 'Closed',
+                badge_ended: 'Ended',
+            },
+        };
 
         const BADGE_LABELS = {
-            running: '运行中', idle: '等待输入', waiting: '待确认', done: '已完成', error: '异常退出',
+            running: 'badge_running', idle: 'badge_idle', waiting: 'badge_waiting', done: 'badge_done', error: 'badge_error',
         };
+
+        function tr(key, params = {}) {
+            const table = I18N[currentLanguage] || I18N['zh-CN'];
+            let text = table[key] ?? I18N['zh-CN'][key] ?? key;
+            for (const [k, v] of Object.entries(params)) {
+                text = text.replaceAll(`{${k}}`, String(v));
+            }
+            return text;
+        }
+
+        function setLanguageState(lang) {
+            currentLanguage = (lang === 'en-US') ? 'en-US' : 'zh-CN';
+            document.documentElement.lang = currentLanguage;
+            try { localStorage.setItem('cli-monitor-language', currentLanguage); } catch (e) { }
+            const zhBtn = document.getElementById('langOptionZh');
+            const enBtn = document.getElementById('langOptionEn');
+            if (zhBtn) zhBtn.classList.toggle('active', currentLanguage === 'zh-CN');
+            if (enBtn) enBtn.classList.toggle('active', currentLanguage === 'en-US');
+        }
+
+        function applyI18nStaticTexts() {
+            const launchSub = document.querySelector('.launch-subtitle');
+            if (launchSub) launchSub.textContent = tr('ui_launch_subtitle');
+            const settingsTitle = document.getElementById('settingsTitle');
+            if (settingsTitle) settingsTitle.textContent = tr('settings_title');
+            const languageLabel = document.getElementById('languageLabel');
+            if (languageLabel) languageLabel.textContent = tr('settings_language');
+            const langZhLabel = document.getElementById('langOptionZhLabel');
+            if (langZhLabel) langZhLabel.textContent = tr('settings_lang_zh');
+            const langEnLabel = document.getElementById('langOptionEnLabel');
+            if (langEnLabel) langEnLabel.textContent = tr('settings_lang_en');
+
+            const subtitle = document.getElementById('subtitle');
+            if (subtitle && (!subtitle.dataset.state || subtitle.dataset.state === 'loading')) {
+                subtitle.textContent = tr('ui_loading');
+            }
+            const emptyTitle = document.querySelector('[data-testid=\"empty-title\"]');
+            if (emptyTitle) {
+                if (!emptyTitle.dataset.state || emptyTitle.dataset.state === 'loading') {
+                    emptyTitle.textContent = tr('ui_loading');
+                } else if (emptyTitle.dataset.state === 'empty') {
+                    emptyTitle.textContent = tr('ui_empty_title');
+                    const emptySub = document.querySelector('[data-testid=\"empty-sub\"]');
+                    if (emptySub) emptySub.innerHTML = tr('ui_empty_sub');
+                }
+            }
+
+            const themeBtn = document.getElementById('themeBtn');
+            if (themeBtn) themeBtn.title = tr('ui_btn_theme');
+            const refreshBtn = document.getElementById('refreshBtn');
+            if (refreshBtn) refreshBtn.title = tr('ui_btn_refresh');
+            const settingsBtn = document.getElementById('settingsBtn');
+            if (settingsBtn) settingsBtn.title = tr('ui_btn_settings');
+            const clearDoneBtn = document.getElementById('clearDoneBtn');
+            if (clearDoneBtn) clearDoneBtn.title = tr('ui_btn_clear_done');
+            const quitBtn = document.getElementById('quitBtn');
+            if (quitBtn) quitBtn.title = tr('ui_btn_quit');
+            const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+            if (settingsCloseBtn) settingsCloseBtn.title = tr('ui_btn_close');
+        }
+
+        function buildEmptyStateHtml() {
+            return `
+        <div class="empty-state" data-testid="empty-state">
+          <div class="empty-graphic" data-testid="empty-icon"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
+          <div class="empty-title" data-testid="empty-title" data-state="empty">${tr('ui_empty_title')}</div>
+          <div class="empty-sub" data-testid="empty-sub">${tr('ui_empty_sub')}</div>
+        </div>`;
+        }
 
         function getCardClass(t) {
             if (t.status === 'DONE' && t.exit_code > 0) return 'error';
@@ -1061,10 +1354,12 @@
         }
 
         function getBadgeText(t) {
-            if (t.status === 'DONE' && t.exit_code === 137) return '已关闭';
-            if (t.status === 'DONE' && t.exit_code > 0) return '异常退出';
-            if (t.status === 'DONE' && t.exit_code < 0) return '已结束';
-            return BADGE_LABELS[getCardClass(t)] || '运行中';
+            if (t.display_badge) return t.display_badge;
+            if (t.status === 'DONE' && t.exit_code === 137) return tr('badge_closed');
+            if (t.status === 'DONE' && t.exit_code > 0) return tr('badge_error');
+            if (t.status === 'DONE' && t.exit_code < 0) return tr('badge_ended');
+            const key = BADGE_LABELS[getCardClass(t)] || 'badge_running';
+            return tr(key);
         }
 
         function getInfoText(t) {
@@ -1083,19 +1378,16 @@
             const sub = document.getElementById('subtitle');
 
             if (!tasks || tasks.length === 0) {
+                sub.dataset.state = 'idle';
                 sub.textContent = '';
-                grid.innerHTML = `
-        <div class="empty-state" data-testid="empty-state">
-          <div class="empty-graphic" data-testid="empty-icon"><img src="assets/app_icon.png" class="brand-icon-img" alt="CLI Monitor"></div>
-          <div class="empty-title" data-testid="empty-title">暂无活跃任务</div>
-          <div class="empty-sub" data-testid="empty-sub">在终端中运行 codex、claude 等命令<br>即可自动开始监控</div>
-        </div>`;
+                grid.innerHTML = buildEmptyStateHtml();
                 requestAnimationFrame(() => updateWindowSize(0));
                 return;
             }
 
             const active = tasks.filter(t => t.status !== 'DONE').length;
-            sub.textContent = `${active} 个活跃 · 共 ${tasks.length} 个任务`;
+            sub.dataset.state = 'summary';
+            sub.textContent = tr('ui_header_summary', { active, total: tasks.length });
 
             grid.innerHTML = tasks.map((t, i) => {
                 const cls = getCardClass(t);
@@ -1111,7 +1403,7 @@
           <div class="card-right">
             <span class="card-badge ${cls}">${getBadgeText(t)}</span>
             <button class="btn-delete" data-testid="delete-task-btn" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
-                    title="删除任务">×</button>
+                    title="${tr('ui_btn_delete_task')}">×</button>
           </div>
         </div>`;
             }).join('');
@@ -1179,6 +1471,41 @@
                 renderTasks(tasks);
                 dismissLaunchSplash();
             } catch (e) { console.error('刷新失败:', e); }
+        }
+
+        function openSettings() {
+            document.getElementById('settingsOverlay')?.classList.add('open');
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsOverlay')?.classList.remove('open');
+        }
+
+        function toggleSettings() {
+            const overlay = document.getElementById('settingsOverlay');
+            if (!overlay) return;
+            overlay.classList.toggle('open');
+        }
+
+        async function loadSettings() {
+            try {
+                const settings = await pywebview.api.get_settings();
+                setLanguageState(settings && settings.language);
+            } catch (e) {
+                setLanguageState(currentLanguage);
+            }
+            applyI18nStaticTexts();
+        }
+
+        async function selectLanguage(lang) {
+            try {
+                const res = await pywebview.api.set_language(lang);
+                setLanguageState(res && res.language);
+            } catch (e) {
+                setLanguageState(lang);
+            }
+            applyI18nStaticTexts();
+            await refresh();
         }
 
         function dismissLaunchSplash(force = false) {
@@ -1289,9 +1616,14 @@
         }
 
         setInterval(refresh, 2000);
+        setLanguageState(currentLanguage);
+        applyI18nStaticTexts();
         initTheme();
         setTimeout(() => dismissLaunchSplash(true), LAUNCH_SPLASH_FALLBACK_MS);
-        window.addEventListener('pywebviewready', () => { refresh(); });
+        window.addEventListener('pywebviewready', async () => {
+            await loadSettings();
+            await refresh();
+        });
     </script>
 
 </body>
