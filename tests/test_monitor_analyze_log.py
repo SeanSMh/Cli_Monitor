@@ -245,6 +245,28 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "RUNNING")
         self.assertEqual(msg, "运行中...")
 
+    def test_analyze_log_detects_waiting_when_prompt_is_outside_last_five_lines(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "Do you want to proceed?\n",
+                "  1. Yes\n",
+                "  2. Yes, and don't ask again for: git:*\n",
+                "  3. No\n",
+                "extra line a\n",
+                "extra line b\n",
+                "extra line c\n",
+                "extra line d\n",
+                "extra line e\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("Do you want to proceed", msg)
+
     def test_analyze_log_keeps_runtime_version_message(self):
         log = self.tmp_path / "logs" / "codex_1_2_3.log"
         _write_log(

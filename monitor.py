@@ -41,6 +41,8 @@ TAIL_BYTES = CORE_CONF.get("tail_bytes", 4096)
 IDLE_THRESHOLD_SECONDS = BEHAVIOR_CONF.get("idle_threshold", 60)
 RATE_HIGH_THRESHOLD = BEHAVIOR_CONF.get("rate_high_threshold", 200)
 RATE_IDLE_SECONDS = BEHAVIOR_CONF.get("rate_idle_seconds", 5)
+STATE_DETECT_TAIL_LINES = 30
+DISPLAY_TAIL_LINES = 5
 
 RATE_HISTORY_SIZE = 30
 SIGNAL_FILE = os.path.join(DEFAULT_LOG_DIR, "_claude_idle_signal")
@@ -225,6 +227,18 @@ def parse_end_info(lines):
     return False, -1, ""
 
 
+def _claude_signal_candidates_for_log(filepath):
+    candidates = []
+    try:
+        stem = os.path.splitext(os.path.basename(str(filepath or "")))[0].strip()
+        if stem:
+            candidates.append(os.path.join(DEFAULT_LOG_DIR, f"_claude_idle_signal_{stem}"))
+    except Exception:
+        pass
+    candidates.append(SIGNAL_FILE)  # backward compatibility for older hook payloads
+    return candidates
+
+
 def strip_ansi_text(s):
     s = re.sub(r'\033\[[0-9;?]*[A-Za-z]', '', s)
     # OSC 序列可用 BEL 或 ST(ESC \\) 结束；JetBrains/JediTerm 常见颜色查询会走这里。
@@ -362,12 +376,15 @@ def analyze_log(filepath):
         return tool_name, "DONE", "任务完成", exit_code, duration, 0
 
     done_patterns = tool_rules.get("done_patterns", {})
-    tail_lines = lines[-5:]
-    
-    clean_lines = [strip_ansi_text(l) for l in tail_lines]
-    visible_lines = [l for l in clean_lines if not is_system_output_line(l)]
-    display_lines = [l for l in visible_lines if not is_display_noise_line(l, tool_name)]
-    context = "".join(visible_lines)
+    detect_tail_lines = lines[-STATE_DETECT_TAIL_LINES:]
+    display_tail_lines = lines[-DISPLAY_TAIL_LINES:]
+
+    clean_detect_lines = [strip_ansi_text(l) for l in detect_tail_lines]
+    visible_detect_lines = [l for l in clean_detect_lines if not is_system_output_line(l)]
+    clean_display_lines = [strip_ansi_text(l) for l in display_tail_lines]
+    visible_display_lines = [l for l in clean_display_lines if not is_system_output_line(l)]
+    display_lines = [l for l in visible_display_lines if not is_display_noise_line(l, tool_name)]
+    context = "".join(visible_detect_lines)
     
     last_line = ""
     for l in reversed(display_lines):
@@ -382,20 +399,27 @@ def analyze_log(filepath):
         if re.search(pattern, context, re.IGNORECASE):
             return tool_name, "IDLE", msg, -1, "", 0
 
-    if tool_name == "claude" and os.path.exists(SIGNAL_FILE):
+    if tool_name == "claude":
+        log_mtime = 0
         try:
-            signal_mtime = os.path.getmtime(SIGNAL_FILE)
             log_mtime = os.path.getmtime(filepath)
-            age = time.time() - signal_mtime
-            if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 5:
-                return tool_name, "IDLE", "AI 已完成回复", -1, "", signal_mtime
         except Exception:
-            pass
+            log_mtime = 0
+        for signal_file in _claude_signal_candidates_for_log(filepath):
+            if not os.path.exists(signal_file):
+                continue
+            try:
+                signal_mtime = os.path.getmtime(signal_file)
+                age = time.time() - signal_mtime
+                if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 5:
+                    return tool_name, "IDLE", "AI 已完成回复", -1, "", signal_mtime
+            except Exception:
+                continue
 
     common_waiting = RULES_CONF.get("common", {}).get("waiting", [])
     for pattern in common_waiting:
         if re.search(pattern, context, re.IGNORECASE):
-            for line in reversed(visible_lines):
+            for line in reversed(visible_detect_lines):
                 stripped = line.strip()
                 stripped = re.sub(r'[\x00-\x1f\x7f]', '', stripped)
                 if re.search(pattern, stripped, re.IGNORECASE):

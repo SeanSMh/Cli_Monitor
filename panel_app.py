@@ -98,6 +98,9 @@ from monitor import (
     parse_session_meta,
     calculate_duration,
     clear_rate_history,
+    tail_read,
+    strip_ansi_text,
+    is_system_output_line,
     DEFAULT_LOG_DIR,
 )
 from terminal_adapters import SessionMeta, TerminalFocusService
@@ -161,7 +164,17 @@ CLAUDE_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 HOOK_MARKER = "CLI_MONITOR_HOOK"  # 用于识别我们注入的 hook
 SIGNAL_FILE = os.path.join(LOG_DIR, "_claude_idle_signal")
 # Hook 命令: Claude 完成回复时写信号文件
-HOOK_COMMAND = f"echo $(date +%s) > {SIGNAL_FILE}  # {HOOK_MARKER}"
+HOOK_COMMAND = (
+    f'CLI_MONITOR_SIGNAL_DIR="{LOG_DIR}"; '
+    'ts=$(date +%s); '
+    'sid="${CLI_MONITOR_SESSION_ID:-}"; '
+    'if [ -n "$sid" ]; then '
+    'printf "%s\\n" "$ts" > "$CLI_MONITOR_SIGNAL_DIR/_claude_idle_signal_$sid"; '
+    'else '
+    f'printf "%s\\n" "$ts" > "{SIGNAL_FILE}"; '
+    'fi '
+    f'# {HOOK_MARKER}'
+)
 
 _cleanup_done = False
 
@@ -1132,6 +1145,7 @@ class Api:
         self._unread_notification_count = 0  # 未读通知数 (用于状态栏角标)
         self._unread_by_task = {}    # Key: log_file -> unread_count
         self._last_focus_result = {"success": False, "provider": "", "reason": ""}
+        self._last_waiting_fingerprint = {}  # Key: log_file -> normalized waiting context
 
     def get_settings(self):
         settings = get_app_settings()
@@ -1266,6 +1280,28 @@ class Api:
         self._unread_notification_count += 1
         self._unread_by_task[log_file] = int(self._unread_by_task.get(log_file, 0) or 0) + 1
 
+    def _build_waiting_fingerprint(self, task):
+        """为 WAITING 状态构建事件指纹，捕捉同状态下菜单/选项内容变化。"""
+        log_file = str(task.get("log_file", "") or "").strip()
+        fallback = str(task.get("message", "") or "").strip()
+        try:
+            lines = tail_read(log_file)
+            cleaned = []
+            for line in lines[-20:]:
+                s = strip_ansi_text(line)
+                if is_system_output_line(s):
+                    continue
+                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+                if not s:
+                    continue
+                cleaned.append(s)
+            if cleaned:
+                # 取最后几行可见内容，覆盖 "Do you want to proceed?" + numbered options 场景。
+                return " | ".join(cleaned[-8:])
+        except Exception:
+            pass
+        return re.sub(r"\s+", " ", fallback)
+
     def _check_notifications(self, tasks):
         now = time.time()
         
@@ -1292,11 +1328,17 @@ class Api:
             # 这说明对应提醒已被处理，自动清理该任务未读计数。
             if status == "RUNNING" and prev_status in {"WAITING", "IDLE"}:
                 self._clear_unread_for_task(log_file)
+            if status != "WAITING":
+                self._last_waiting_fingerprint.pop(log_file, None)
 
             if status == "WAITING":
-                # WAITING 仍使用 Edge Trigger + Debounce
-                if status == prev_status: continue
-                
+                # WAITING 使用 "状态边沿 + 等待内容指纹" 触发，覆盖同状态下菜单项变化。
+                waiting_fp = self._build_waiting_fingerprint(task)
+                prev_waiting_fp = self._last_waiting_fingerprint.get(log_file, "")
+                self._last_waiting_fingerprint[log_file] = waiting_fp
+                if status == prev_status and waiting_fp == prev_waiting_fp:
+                    continue
+
                 key = f"{log_file}:WAITING"
                 if now - self._last_notify_time.get(key, 0) < 5: continue
 
@@ -1347,6 +1389,7 @@ class Api:
         """删除任务日志文件"""
         try:
             self._clear_unread_for_task(log_file)
+            self._last_waiting_fingerprint.pop(log_file, None)
             if os.path.exists(log_file) and log_file.startswith(LOG_DIR):
                 os.remove(log_file)
                 # 清理速率跟踪历史, 避免内存泄漏

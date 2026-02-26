@@ -92,10 +92,10 @@ function ai_wrapper() {
     # 根据平台选择正确的 script 命令参数
     if [[ "$_CLI_MONITOR_PLATFORM" == "macos" ]]; then
         # macOS (BSD script): -a 追加模式, -F 实时刷新, -q 静默
-        script -a -F -q "$log_file" "$tool_name" "$@"
+        CLI_MONITOR_SESSION_ID="$session_id" CLI_MONITOR_LOG_FILE="$log_file" script -a -F -q "$log_file" "$tool_name" "$@"
     else
         # Linux (GNU script): -a 追加模式, -f 实时刷新, -q 静默
-        script -a -f -q -c "$tool_name $*" "$log_file"
+        CLI_MONITOR_SESSION_ID="$session_id" CLI_MONITOR_LOG_FILE="$log_file" script -a -f -q -c "$tool_name $*" "$log_file"
     fi
 
     local exit_code=$?
