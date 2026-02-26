@@ -1339,7 +1339,10 @@ class Api:
                 if status == prev_status and waiting_fp == prev_waiting_fp:
                     continue
 
-                key = f"{log_file}:WAITING"
+                fp_key = re.sub(r"\s+", " ", waiting_fp).strip()
+                if len(fp_key) > 120:
+                    fp_key = fp_key[-120:]
+                key = f"{log_file}:WAITING:{fp_key}"
                 if now - self._last_notify_time.get(key, 0) < 5: continue
 
                 title, subtitle, body = _build_notification_payload(task)

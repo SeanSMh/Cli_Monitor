@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
                 r"Confirm\?",
                 r"\[\?\]",
                 r"Press Enter",
+                r"Save file to continue",
                 r"Do you want to",
                 r"Would you like to",
                 r"Apply changes\?"
