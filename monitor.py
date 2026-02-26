@@ -428,6 +428,11 @@ def analyze_log(filepath):
 
     idle_patterns = tool_rules.get("idle_patterns", []) + RULES_CONF.get("common", {}).get("idle", [])
     busy_patterns = tool_rules.get("busy_patterns", []) + RULES_CONF.get("common", {}).get("busy", [])
+    tool_idle_threshold = tool_rules.get("idle_threshold", IDLE_THRESHOLD_SECONDS)
+    try:
+        tool_idle_threshold = float(tool_idle_threshold)
+    except Exception:
+        tool_idle_threshold = float(IDLE_THRESHOLD_SECONDS)
 
     last_idle_pos = -1
     for pattern in idle_patterns:
@@ -461,7 +466,7 @@ def analyze_log(filepath):
              if any(re.search(p, broad_context, re.IGNORECASE) for p in busy_patterns):
                  return tool_name, "IDLE", "AI 已完成回复", -1, "", 0
 
-        if idle_seconds > IDLE_THRESHOLD_SECONDS:
+        if idle_seconds > tool_idle_threshold:
             return tool_name, "IDLE", "等待输入", -1, "", 0
     except Exception:
         pass

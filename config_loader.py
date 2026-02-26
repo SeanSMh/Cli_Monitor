@@ -53,12 +53,14 @@ DEFAULT_CONFIG = {
                 "name": "claude",
                 "busy_patterns": [r"Thinking", r"esc to interrupt"],
                 "idle_patterns": [r"Context left", r"Cost:"],
+                "idle_threshold": 10,
                 "signal_file": "_claude_idle_signal"
             },
             {
                 "name": "codex",
                 "busy_patterns": [r"Working\("],
-                "idle_patterns": [r"\? for shortcuts", r"context left"]
+                "idle_patterns": [r"\? for shortcuts", r"context left"],
+                "idle_threshold": 12,
             },
             {
                 "name": "gemini",
@@ -118,9 +120,47 @@ class ConfigLoader:
         for key, value in update.items():
             if isinstance(value, dict) and key in base and isinstance(base[key], dict):
                 base[key] = self._deep_merge(base[key], value)
+            elif (
+                key == "tools"
+                and isinstance(value, list)
+                and isinstance(base.get(key), list)
+            ):
+                base[key] = self._merge_tools_list(base[key], value)
             else:
                 base[key] = value
         return base
+
+    def _merge_tools_list(self, default_tools, user_tools):
+        """按 tool.name 合并，保留默认新增字段（如 idle_threshold）"""
+        if not isinstance(default_tools, list):
+            return user_tools
+        if not isinstance(user_tools, list):
+            return default_tools
+
+        default_by_name = {}
+        for item in default_tools:
+            if isinstance(item, dict) and item.get("name"):
+                default_by_name[item["name"]] = item
+
+        merged = []
+        for user_item in user_tools:
+            if not isinstance(user_item, dict):
+                merged.append(user_item)
+                continue
+            name = user_item.get("name")
+            default_item = default_by_name.get(name)
+            if isinstance(default_item, dict):
+                merged.append(self._deep_merge(default_item.copy(), user_item))
+            else:
+                merged.append(user_item)
+
+        user_names = {t.get("name") for t in user_tools if isinstance(t, dict)}
+        for default_item in default_tools:
+            if not isinstance(default_item, dict):
+                continue
+            if default_item.get("name") not in user_names:
+                merged.append(default_item)
+        return merged
 
     def get(self, path=None, default=None):
         """
