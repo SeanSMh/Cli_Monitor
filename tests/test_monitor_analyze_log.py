@@ -200,6 +200,14 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "RUNNING")
         self.assertIn("Cost:", msg)
 
+    def test_analyze_log_treats_token_usage_line_as_noise(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["94126 tokens\n"])
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
     def test_analyze_log_claude_notification_idle_compatibility(self):
         log = self.tmp_path / "logs" / "claude_1_2_3.log"
         _write_log(log, "claude", ["Thinking...\n"])

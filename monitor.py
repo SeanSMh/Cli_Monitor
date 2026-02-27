@@ -86,6 +86,17 @@ DISPLAY_NOISE_PATTERNS_BY_TOOL = {
         r"^[│\s]*(?:Model|Directory|Approval|Sandbox|Profile|Workspace|Version|Session|Agent|Config|Provider)\s*:\s*.*$",
         r"^[│\s]*You are in\s+/.+$",
         r"^[│\s]*Press .* to .*",
+        # Token usage line noise (keep card subtitle concise)
+        r"^\s*[\d,]{3,}\s+tokens?\b.*$",
+        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
+    ),
+    "claude": (
+        r"^\s*[\d,]{3,}\s+tokens?\b.*$",
+        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
+    ),
+    "gemini": (
+        r"^\s*[\d,]{3,}\s+tokens?\b.*$",
+        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
     ),
 }
 

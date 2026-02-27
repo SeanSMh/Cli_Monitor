@@ -1050,7 +1050,7 @@
             display: flex;
             flex-direction: column;
             justify-content: center;
-            gap: 11px;
+            gap: 14px;
         }
 
         .card-title-row {
@@ -1067,7 +1067,7 @@
             font-weight: 600;
             min-width: 0;
             flex: 0 1 auto;
-            max-width: 58%;
+            max-width: 50%;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -1088,13 +1088,14 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 46%;
+            max-width: 54%;
             flex: 0 1 auto;
         }
 
         .card-info {
             font-family: 'JetBrains Mono', monospace;
             font-size: 11px;
+            line-height: 1.25;
             color: var(--text-tertiary);
             margin-top: 0;
             white-space: nowrap;
@@ -1105,14 +1106,14 @@
         .card-right {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 4px;
             flex-shrink: 0;
         }
 
         .card-badge {
             font-size: 10px;
             font-weight: 600;
-            padding: 3px 8px;
+            padding: 3px 6px;
             border-radius: 6px;
             letter-spacing: 0.3px;
             white-space: nowrap;
@@ -1651,11 +1652,11 @@
                 if (suffix && text.endsWith(suffix)) {
                     text = text.slice(0, Math.max(0, text.length - suffix.length)).trim();
                 }
-                return text.length > 36 ? text.slice(0, 33) + '…' : text;
+                return text;
             }
             if (t.duration) return `⏱ ${t.duration}`;
             if (t.message && t.status !== 'DONE') {
-                return t.message.length > 32 ? t.message.slice(0, 29) + '…' : t.message;
+                return String(t.message);
             }
             return '';
         }
@@ -1706,7 +1707,7 @@
               <div class="tool-name">${safeToolName}</div>
               ${source ? `<div class="card-source" title="${safeSource}">${safeSource}</div>` : ''}
             </div>
-            ${info ? `<div class="card-info">${safeInfo}</div>` : ''}
+            ${info ? `<div class="card-info" title="${safeInfo}">${safeInfo}</div>` : ''}
           </div>
           <div class="card-right">
             <span class="card-badge ${cls}">${getBadgeText(t)}</span>

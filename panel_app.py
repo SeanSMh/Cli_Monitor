@@ -339,6 +339,7 @@ _resize_delegate = None
 _api = None
 _status_icon_image = None
 _terminal_focus_service = TerminalFocusService()
+QUIT_FORCE_EXIT_SECONDS = 2.5
 E2E_MODE = os.environ.get("CLI_MONITOR_E2E", "0") == "1"
 E2E_HOST = os.environ.get("CLI_MONITOR_E2E_HOST", "127.0.0.1")
 E2E_PORT = int(os.environ.get("CLI_MONITOR_E2E_PORT", "18787"))
@@ -1065,6 +1066,8 @@ if HAS_APPKIT:
         @objc.python_method
         def show_panel(self):
             global _window_visible, _api
+            if _app_quitting:
+                return
             if _window is None:
                 return
             try:
@@ -1082,6 +1085,8 @@ if HAS_APPKIT:
         @objc.python_method
         def toggle_panel(self):
             global _window_visible, _api
+            if _app_quitting:
+                return
             if _window is None:
                 return
             if _window_visible:
@@ -1450,6 +1455,45 @@ def _stop_e2e_server():
     except Exception:
         pass
     _e2e_server = None
+
+
+def _schedule_force_exit(timeout_seconds=QUIT_FORCE_EXIT_SECONDS):
+    """退出兜底: 防止 GUI 关闭链路卡死导致进程残留。"""
+
+    def _worker():
+        try:
+            timeout = max(0.5, float(timeout_seconds))
+        except Exception:
+            timeout = QUIT_FORCE_EXIT_SECONDS
+        time.sleep(timeout)
+        if _app_quitting:
+            _log("quit_app: force exit fallback")
+            try:
+                cleanup_shell_wrapper()
+            except Exception:
+                pass
+            try:
+                cleanup_claude_hooks()
+            except Exception:
+                pass
+            os._exit(0)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _request_app_terminate():
+    """优先在主线程请求 terminate，避免跨线程直接销毁窗口引发卡顿。"""
+    if not HAS_APPKIT:
+        return False
+    try:
+        app = NSApplication.sharedApplication()
+        app.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "terminate:", None, False
+        )
+        return True
+    except Exception as e:
+        _log(f"request terminate failed: {e}")
+        return False
 
 
 # ===========================================
@@ -1919,19 +1963,16 @@ class Api:
         _app_quitting = True
         _window_visible = False
         _log("quit_app: begin fast-exit")
+        _schedule_force_exit()
         # 退出路径优先关闭窗口，重清理逻辑由 atexit 统一执行，避免 UI 卡死。
         _stop_e2e_server()
         remove_status_item_from_thread(wait_until_done=False)
-        for w in list(webview.windows):
-            try:
-                w.destroy()
-            except Exception as e:
-                _log(f"退出时销毁窗口失败: {e}")
-        try:
-            if HAS_APPKIT:
-                NSApplication.sharedApplication().terminate_(None)
-        except Exception as e:
-            _log(f"请求应用终止失败: {e}")
+        if not _request_app_terminate():
+            for w in list(webview.windows):
+                try:
+                    w.destroy()
+                except Exception as e:
+                    _log(f"退出时销毁窗口失败: {e}")
         _log("quit_app: exit requested")
         return True
 
