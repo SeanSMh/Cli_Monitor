@@ -427,6 +427,39 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "WAITING")
         self.assertIn("Do you want to proceed", msg)
 
+    def test_analyze_log_detects_waiting_from_numbered_menu_without_waiting_patterns(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(
+            log,
+            "claude",
+            [
+                "❯ 1. Yes\n",
+                "  2) Yes, and don't ask again\n",
+                "  3. No\n",
+            ],
+        )
+
+        with mock.patch.dict(self.monitor.RULES_CONF["common"], {"waiting": []}, clear=False):
+            _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("1.", msg)
+
+    def test_analyze_log_does_not_apply_ai_menu_waiting_to_non_ai_tools(self):
+        log = self.tmp_path / "logs" / "gradle_1_2_3.log"
+        _write_log(
+            log,
+            "gradle",
+            [
+                "  1) compileDebug\n",
+                "  2) testDebugUnitTest\n",
+            ],
+        )
+
+        with mock.patch.dict(self.monitor.RULES_CONF["common"], {"waiting": []}, clear=False):
+            _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertIn("2) testDebugUnitTest", msg)
+
     def test_analyze_log_keeps_runtime_version_message(self):
         log = self.tmp_path / "logs" / "codex_1_2_3.log"
         _write_log(

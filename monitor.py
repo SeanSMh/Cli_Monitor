@@ -89,6 +89,12 @@ DISPLAY_NOISE_PATTERNS_BY_TOOL = {
     ),
 }
 
+WAITING_MENU_LINE_RE = re.compile(r"^\s*(?:[❯›>•*\-]\s*)?\d+[.)]\s+\S+")
+WAITING_QUESTION_HINT_RE = re.compile(
+    r"(?:do you want to|would you like to|confirm|choose|select|apply|proceed|continue|save file to continue|press enter)",
+    re.IGNORECASE,
+)
+
 _codex_parse_stats_lock = Lock()
 _codex_parse_stats = {
     "official_hit_count": 0,
@@ -529,6 +535,29 @@ def _analyze_claude_signal_status(filepath):
     return None
 
 
+def _detect_waiting_prompt_from_lines(lines, line_limit=60):
+    normalized = []
+    for raw in lines or []:
+        s = strip_ansi_text(str(raw or ""))
+        s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+        if s:
+            normalized.append(s)
+    if not normalized:
+        return ""
+
+    menu_lines = [line for line in normalized if WAITING_MENU_LINE_RE.search(line)]
+    if len(menu_lines) >= 2:
+        for line in reversed(normalized):
+            if WAITING_QUESTION_HINT_RE.search(line):
+                return line[:line_limit]
+        return menu_lines[0][:line_limit]
+
+    for line in reversed(normalized):
+        if WAITING_QUESTION_HINT_RE.search(line):
+            return line[:line_limit]
+    return ""
+
+
 def strip_ansi_text(s):
     s = re.sub(r'\033\[[0-9;?]*[A-Za-z]', '', s)
     # OSC 序列可用 BEL 或 ST(ESC \\) 结束；JetBrains/JediTerm 常见颜色查询会走这里。
@@ -772,6 +801,16 @@ def analyze_log(filepath):
         if signal_result is not None:
             status, status_msg, signal_ts = signal_result
             return _return_status(tool_name, status, status_msg, -1, "", signal_ts)
+
+    # 编号菜单/确认问句的纯文本快速识别（仅对交互式 AI CLI 启用，避免误判构建日志）。
+    if tool_name in {"claude", "codex", "gemini"}:
+        fast_waiting_prompt = _detect_waiting_prompt_from_lines(visible_detect_lines[-20:])
+        if fast_waiting_prompt:
+            if is_claude:
+                _record_claude_parse_hit("text_fallback")
+            return _return_status(
+                tool_name, "WAITING", fast_waiting_prompt, -1, "", 0, codex_source="text"
+            )
 
     for pattern in common_waiting:
         if re.search(pattern, context, re.IGNORECASE):

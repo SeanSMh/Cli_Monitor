@@ -265,18 +265,27 @@ if not state and any(
     state = "WAITING"
 
 if not state:
-    for item in texts[:12]:
-        if re.search(r"^\\d+\\.\\s+\\S+", item):
-            state = "WAITING"
-            break
+    menu_count = 0
+    for item in texts[:20]:
+        for line in str(item).splitlines():
+            if re.search(r"^\\s*(?:[❯›>•*\\-]\\s*)?\\d+[\\.)]\\s+\\S+", line):
+                menu_count += 1
+    if menu_count >= 2:
+        state = "WAITING"
 
 message = _first_nonempty(texts)[:160]
 if state == "WAITING":
+    waiting_message = ""
     for item in texts:
-        candidate = item.strip()
-        if candidate and not re.search(r"^\\d+\\.\\s*", candidate):
-            message = candidate[:160]
+        for line in str(item).splitlines():
+            candidate = line.strip()
+            if candidate and not re.search(r"^\\s*(?:[❯›>•*\\-]\\s*)?\\d+[\\.)]\\s*", candidate):
+                waiting_message = candidate[:160]
+                break
+        if waiting_message:
             break
+    if waiting_message:
+        message = waiting_message
 
 if not message:
     if state == "WAITING":
@@ -323,6 +332,7 @@ _cleanup_done = False
 # 全局引用
 _window = None
 _window_visible = True
+_app_quitting = False
 _status_item = None
 _sb_delegate = None
 _resize_delegate = None
@@ -1203,14 +1213,14 @@ def _do_remove_status_item():
         _status_item = None
 
 
-def remove_status_item_from_thread():
+def remove_status_item_from_thread(wait_until_done=True):
     """从任意线程安全地调度状态栏移除到主线程。"""
     if not HAS_APPKIT:
         return
     try:
         if _sb_delegate is not None:
             _sb_delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "doRemoveStatusItem:", None, True
+                "doRemoveStatusItem:", None, bool(wait_until_done)
             )
         else:
             _do_remove_status_item()
@@ -1903,21 +1913,27 @@ class Api:
 
     def quit_app(self):
         """真正退出"""
-        _stop_e2e_server()
-        cleanup_shell_wrapper()
-        cleanup_claude_hooks()
-        remove_status_item_from_thread()
-        global _window_visible
+        global _window_visible, _app_quitting
+        if _app_quitting:
+            return True
+        _app_quitting = True
         _window_visible = False
+        _log("quit_app: begin fast-exit")
+        # 退出路径优先关闭窗口，重清理逻辑由 atexit 统一执行，避免 UI 卡死。
+        _stop_e2e_server()
+        remove_status_item_from_thread(wait_until_done=False)
         for w in list(webview.windows):
-            try:
-                w.events.closing -= on_closing
-            except Exception:
-                pass
             try:
                 w.destroy()
             except Exception as e:
                 _log(f"退出时销毁窗口失败: {e}")
+        try:
+            if HAS_APPKIT:
+                NSApplication.sharedApplication().terminate_(None)
+        except Exception as e:
+            _log(f"请求应用终止失败: {e}")
+        _log("quit_app: exit requested")
+        return True
 
 
 # ===========================================
@@ -1927,7 +1943,9 @@ class Api:
 
 def on_closing():
     """拦截窗口关闭，改为隐藏到状态栏"""
-    global _window_visible
+    global _window_visible, _app_quitting
+    if _app_quitting:
+        return True  # 退出流程中允许真正关闭窗口
     if _window:
         _window.hide()
     _window_visible = False

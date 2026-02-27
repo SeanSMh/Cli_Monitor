@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 
-WAITING_MENU_RE = re.compile(r"^\s*(?:❯\s*)?\d+\.\s+\S+")
+WAITING_MENU_RE = re.compile(r"^\s*(?:[❯›>•*\-]\s*)?\d+[.)]\s+\S+")
 WAITING_QUESTION_RE = re.compile(
     r"(?:do you want to|would you like to|confirm|choose|select|apply|proceed|continue|save file to continue|press enter)",
     re.IGNORECASE,
@@ -194,4 +194,3 @@ def extract_first_meaningful_text(
                 continue
             return clip_text(s)
     return ""
-

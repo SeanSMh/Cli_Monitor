@@ -867,7 +867,7 @@
             /* 固定高度 */
             background: var(--bg-card);
             border-radius: var(--radius);
-            padding: 14px 16px;
+            padding: 10px 16px;
             border: 1px solid var(--border-card);
             box-shadow: var(--shadow-card);
             transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1047,13 +1047,17 @@
         .card-body {
             flex: 1;
             min-width: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 11px;
         }
 
         .card-title-row {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            gap: 8px;
+            justify-content: flex-start;
+            gap: 6px;
             min-width: 0;
         }
 
@@ -1062,10 +1066,15 @@
             font-size: 14px;
             font-weight: 600;
             min-width: 0;
-            flex: 1;
+            flex: 0 1 auto;
+            max-width: 58%;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+
+        .card-title-row>.tool-name:only-child {
+            max-width: 100%;
         }
 
         .card-source {
@@ -1079,15 +1088,15 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 42%;
-            flex-shrink: 1;
+            max-width: 46%;
+            flex: 0 1 auto;
         }
 
         .card-info {
             font-family: 'JetBrains Mono', monospace;
             font-size: 11px;
             color: var(--text-tertiary);
-            margin-top: 3px;
+            margin-top: 0;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;

@@ -24,6 +24,14 @@ class CodexEventParserTests(unittest.TestCase):
         self.assertEqual(status, "WAITING")
         self.assertIn("Do you want to make this edit", msg)
 
+    def test_detects_waiting_from_parenthesized_menu_lines(self):
+        lines = [
+            '{"msg":{"type":"turn.progress"},"text":"Pick one\\n❯ 1) Yes\\n  2) No"}\n'
+        ]
+        status, msg = parse_codex_structured_status(lines) or ("", "")
+        self.assertEqual(status, "WAITING")
+        self.assertIn("Pick one", msg)
+
     def test_detects_idle_from_completed_event(self):
         lines = ['{"event":{"type":"turn.completed"},"message":"done"}\n']
         status, msg = parse_codex_structured_status(lines) or ("", "")
