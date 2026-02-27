@@ -821,6 +821,10 @@ if HAS_APPKIT:
             except Exception:
                 _do_update_status_icon(0)
 
+        def doRemoveStatusItem_(self, _):
+            """ObjC selector: 在主线程移除状态栏图标"""
+            _do_remove_status_item()
+
         def doDeliverNotification_(self, payload):
             """ObjC selector: 在主线程发送原生通知"""
             try:
@@ -905,6 +909,34 @@ def _do_setup_statusbar():
     _setup_notification_center()
 
     print("[CLI Monitor] ✅ 状态栏图标已创建 (主线程)")
+
+
+def _do_remove_status_item():
+    """实际移除状态栏图标 (仅在主线程调用)"""
+    global _status_item
+    if not HAS_APPKIT or _status_item is None:
+        return
+    try:
+        NSStatusBar.systemStatusBar().removeStatusItem_(_status_item)
+    except Exception as e:
+        _log(f"移除状态栏图标失败: {e}")
+    finally:
+        _status_item = None
+
+
+def remove_status_item_from_thread():
+    """从任意线程安全地调度状态栏移除到主线程。"""
+    if not HAS_APPKIT:
+        return
+    try:
+        if _sb_delegate is not None:
+            _sb_delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "doRemoveStatusItem:", None, True
+            )
+        else:
+            _do_remove_status_item()
+    except Exception as e:
+        _log(f"调度状态栏移除失败: {e}")
 
 
 def _do_update_status_icon(alert_count):
@@ -1484,10 +1516,19 @@ class Api:
         """真正退出"""
         _stop_e2e_server()
         cleanup_shell_wrapper()
-        if _status_item:
-            NSStatusBar.systemStatusBar().removeStatusItem_(_status_item)
-        for w in webview.windows:
-            w.destroy()
+        cleanup_claude_hooks()
+        remove_status_item_from_thread()
+        global _window_visible
+        _window_visible = False
+        for w in list(webview.windows):
+            try:
+                w.events.closing -= on_closing
+            except Exception:
+                pass
+            try:
+                w.destroy()
+            except Exception as e:
+                _log(f"退出时销毁窗口失败: {e}")
 
 
 # ===========================================
