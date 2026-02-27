@@ -281,6 +281,67 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "RUNNING")
         self.assertEqual(msg, "server version mismatch detected")
 
+    def test_analyze_log_uses_codex_structured_waiting_event(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                '{"type":"turn.waiting_for_input","prompt":"Do you want to proceed?","options":["1. Yes","2. No"]}\n',
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("Do you want to proceed", msg)
+
+    def test_analyze_log_uses_codex_structured_completed_event(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                '{"type":"turn.completed","message":"turn finished"}\n',
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "IDLE")
+        self.assertEqual(msg, "AI 已完成回复")
+
+    def test_analyze_log_uses_app_server_waiting_event(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                '{"jsonrpc":"2.0","method":"turn/input_required","params":{"prompt":"Save file to continue","choices":["1. Yes","2. No"]}}\n',
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("Save file to continue", msg)
+
+    def test_analyze_log_records_official_parse_stats(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                '{"jsonrpc":"2.0","method":"turn/completed","params":{"summary":"done"}}\n',
+            ],
+        )
+
+        _, status, _, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "IDLE")
+
+        stats = self.monitor.get_codex_parse_stats()
+        self.assertEqual(stats["official_hit_count"], 1)
+        self.assertEqual(stats["compat_hit_count"], 0)
+        self.assertEqual(stats["text_hit_count"], 0)
+        self.assertEqual(stats["last_source"], "official")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,7 @@ from monitor import (
     parse_session_meta,
     calculate_duration,
     clear_rate_history,
+    get_codex_parse_stats,
     tail_read,
     strip_ansi_text,
     is_system_output_line,
@@ -709,6 +710,7 @@ def _translate_system_message_for_display(text, lang=None):
     mapping = {
         "初始化...": _t("subtitle.running.fallback", lang),
         "运行中...": _t("subtitle.running.fallback", lang),
+        "等待确认输入": _t("subtitle.waiting.fallback", lang),
         "等待输入": _t("badge.idle", lang),
         "等待下一步输入": _t("subtitle.idle.wait_next", lang),
         "AI 已完成回复": _t("subtitle.idle.ai_done", lang),
@@ -1482,6 +1484,7 @@ class Api:
             "unread_notification_count": self._unread_notification_count,
             "last_focus_result": self._last_focus_result,
             "window_visible": bool(_window_visible),
+            "codex_parse_stats": get_codex_parse_stats(),
         }
 
     def debug_set_unread_count(self, count):

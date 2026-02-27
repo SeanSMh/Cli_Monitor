@@ -17,6 +17,9 @@ from itertools import islice
 from collections import defaultdict
 from threading import Timer, Lock
 from config_loader import config
+from app_server_event_parser import parse_app_server_status
+from codex_event_parser import parse_codex_structured_status
+from parsers.codex_official_schema import parse_codex_official_status
 
 try:
     from watchdog.observers import Observer
@@ -83,6 +86,63 @@ DISPLAY_NOISE_PATTERNS_BY_TOOL = {
         r"^[│\s]*Press .* to .*",
     ),
 }
+
+_codex_parse_stats_lock = Lock()
+_codex_parse_stats = {
+    "official_hit_count": 0,
+    "compat_hit_count": 0,
+    "text_hit_count": 0,
+    "unknown_event_count": 0,
+    "total_codex_samples": 0,
+    "last_source": "",
+}
+
+
+def _record_codex_parse_hit(source: str):
+    source_key = str(source or "").strip().lower()
+    if source_key not in {"official", "compat", "text"}:
+        return
+    with _codex_parse_stats_lock:
+        if source_key == "official":
+            _codex_parse_stats["official_hit_count"] += 1
+        elif source_key == "compat":
+            _codex_parse_stats["compat_hit_count"] += 1
+        else:
+            _codex_parse_stats["text_hit_count"] += 1
+        _codex_parse_stats["total_codex_samples"] += 1
+        _codex_parse_stats["last_source"] = source_key
+
+
+def _record_codex_unknown_events(count: int):
+    try:
+        delta = int(count)
+    except Exception:
+        delta = 0
+    if delta <= 0:
+        return
+    with _codex_parse_stats_lock:
+        _codex_parse_stats["unknown_event_count"] += delta
+
+
+def get_codex_parse_stats():
+    with _codex_parse_stats_lock:
+        data = dict(_codex_parse_stats)
+    total = max(1, int(data.get("total_codex_samples", 0) or 0))
+    fallback_hits = int(data.get("compat_hit_count", 0) or 0) + int(
+        data.get("text_hit_count", 0) or 0
+    )
+    data["fallback_rate"] = fallback_hits / float(total)
+    return data
+
+
+def _get_codex_runtime_flags():
+    codex_conf = config.get("codex", {}) or {}
+    official_enabled = bool(codex_conf.get("official_schema_enabled", True))
+    fallback_enabled = bool(codex_conf.get("fallback_enabled", True))
+    strict_mode = bool(codex_conf.get("strict_mode", False))
+    if strict_mode:
+        fallback_enabled = False
+    return official_enabled, fallback_enabled, strict_mode
 
 
 # === 核心工具函数 ===
@@ -356,6 +416,63 @@ def _get_tool_rules(tool_name):
     return None
 
 
+def _return_status(
+    tool_name,
+    status,
+    message,
+    exit_code=-1,
+    duration="",
+    signal_ts=0,
+    codex_source="",
+):
+    if tool_name == "codex" and codex_source:
+        _record_codex_parse_hit(codex_source)
+    return tool_name, status, message, exit_code, duration, signal_ts
+
+
+def _normalize_running_status_message(status: str, message: str, last_line: str) -> str:
+    if status == "RUNNING" and (not message or message == "运行中..."):
+        return last_line
+    return message or "运行中..."
+
+
+def _analyze_codex_structured_status(visible_detect_lines, common_waiting, last_line):
+    official_enabled, fallback_enabled, strict_mode = _get_codex_runtime_flags()
+    unknown_events = 0
+
+    if official_enabled:
+        official_status, unknown = parse_codex_official_status(
+            visible_detect_lines, waiting_patterns=common_waiting
+        )
+        unknown_events += int(unknown or 0)
+        if official_status is not None:
+            status, status_msg = official_status
+            status_msg = _normalize_running_status_message(status, status_msg, last_line)
+            return (status, status_msg, "official"), unknown_events
+
+    if fallback_enabled:
+        app_server_status = parse_app_server_status(
+            visible_detect_lines, waiting_patterns=common_waiting
+        )
+        if app_server_status is not None:
+            status, status_msg = app_server_status
+            status_msg = _normalize_running_status_message(status, status_msg, last_line)
+            return (status, status_msg, "compat"), unknown_events
+
+        structured_status = parse_codex_structured_status(
+            visible_detect_lines, waiting_patterns=common_waiting
+        )
+        if structured_status is not None:
+            status, status_msg = structured_status
+            status_msg = _normalize_running_status_message(status, status_msg, last_line)
+            return (status, status_msg, "compat"), unknown_events
+
+    if strict_mode:
+        return ("RUNNING", last_line[:60], "text"), unknown_events
+
+    return None, unknown_events
+
+
 def analyze_log(filepath):
     """
     Returns: (tool_name, status, message, exit_code, duration, signal_ts)
@@ -373,9 +490,10 @@ def analyze_log(filepath):
     if is_done:
         duration = calculate_duration(start_time, end_time)
         clear_rate_history(filepath)
-        return tool_name, "DONE", "任务完成", exit_code, duration, 0
+        return _return_status(tool_name, "DONE", "任务完成", exit_code, duration, 0)
 
     done_patterns = tool_rules.get("done_patterns", {})
+    common_waiting = RULES_CONF.get("common", {}).get("waiting", [])
     detect_tail_lines = lines[-STATE_DETECT_TAIL_LINES:]
     display_tail_lines = lines[-DISPLAY_TAIL_LINES:]
 
@@ -397,7 +515,26 @@ def analyze_log(filepath):
 
     for pattern, msg in done_patterns.items():
         if re.search(pattern, context, re.IGNORECASE):
-            return tool_name, "IDLE", msg, -1, "", 0
+            return _return_status(
+                tool_name, "IDLE", msg, -1, "", 0, codex_source="text"
+            )
+
+    if tool_name == "codex":
+        codex_result, unknown_events = _analyze_codex_structured_status(
+            visible_detect_lines, common_waiting, last_line
+        )
+        _record_codex_unknown_events(unknown_events)
+        if codex_result is not None:
+            status, status_msg, source = codex_result
+            return _return_status(
+                tool_name,
+                status,
+                (status_msg or "运行中...")[:60],
+                -1,
+                "",
+                0,
+                codex_source=source,
+            )
 
     if tool_name == "claude":
         log_mtime = 0
@@ -412,19 +549,30 @@ def analyze_log(filepath):
                 signal_mtime = os.path.getmtime(signal_file)
                 age = time.time() - signal_mtime
                 if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 5:
-                    return tool_name, "IDLE", "AI 已完成回复", -1, "", signal_mtime
+                    return _return_status(
+                        tool_name, "IDLE", "AI 已完成回复", -1, "", signal_mtime
+                    )
             except Exception:
                 continue
 
-    common_waiting = RULES_CONF.get("common", {}).get("waiting", [])
     for pattern in common_waiting:
         if re.search(pattern, context, re.IGNORECASE):
             for line in reversed(visible_detect_lines):
                 stripped = line.strip()
                 stripped = re.sub(r'[\x00-\x1f\x7f]', '', stripped)
                 if re.search(pattern, stripped, re.IGNORECASE):
-                    return tool_name, "WAITING", stripped[:60], -1, "", 0
-            return tool_name, "WAITING", last_line[:60], -1, "", 0
+                    return _return_status(
+                        tool_name,
+                        "WAITING",
+                        stripped[:60],
+                        -1,
+                        "",
+                        0,
+                        codex_source="text",
+                    )
+            return _return_status(
+                tool_name, "WAITING", last_line[:60], -1, "", 0, codex_source="text"
+            )
 
     idle_patterns = tool_rules.get("idle_patterns", []) + RULES_CONF.get("common", {}).get("idle", [])
     busy_patterns = tool_rules.get("busy_patterns", []) + RULES_CONF.get("common", {}).get("busy", [])
@@ -446,11 +594,15 @@ def analyze_log(filepath):
                 last_busy_pos = max(last_busy_pos, m.end())
 
         if last_idle_pos > last_busy_pos:
-            return tool_name, "IDLE", "等待输入", -1, "", 0
+            return _return_status(
+                tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
+            )
 
     was_fast, is_stalled, stall_secs = track_file_rate(filepath)
     if was_fast and is_stalled and stall_secs >= RATE_IDLE_SECONDS:
-        return tool_name, "IDLE", "AI 已完成回复", -1, "", 0
+        return _return_status(
+            tool_name, "IDLE", "AI 已完成回复", -1, "", 0, codex_source="text"
+        )
 
     try:
         mtime = os.path.getmtime(filepath)
@@ -464,14 +616,26 @@ def analyze_log(filepath):
                  [strip_ansi_text(l) for l in broad_lines if not is_system_output_line(l)]
              )
              if any(re.search(p, broad_context, re.IGNORECASE) for p in busy_patterns):
-                 return tool_name, "IDLE", "AI 已完成回复", -1, "", 0
+                 return _return_status(
+                     tool_name,
+                     "IDLE",
+                     "AI 已完成回复",
+                     -1,
+                     "",
+                     0,
+                     codex_source="text",
+                 )
 
         if idle_seconds > tool_idle_threshold:
-            return tool_name, "IDLE", "等待输入", -1, "", 0
+            return _return_status(
+                tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
+            )
     except Exception:
         pass
 
-    return tool_name, "RUNNING", last_line[:60], -1, "", 0
+    return _return_status(
+        tool_name, "RUNNING", last_line[:60], -1, "", 0, codex_source="text"
+    )
 
 
 # === 监控核心 (Hybrid: Watchdog + Polling) ===

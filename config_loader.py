@@ -23,6 +23,11 @@ DEFAULT_CONFIG = {
         "refresh_rate": 2000,
         "window_size": [660, 650]
     },
+    "codex": {
+        "official_schema_enabled": True,
+        "fallback_enabled": True,
+        "strict_mode": False
+    },
     "rules": {
         "common": {
             "waiting": [
