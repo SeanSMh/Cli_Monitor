@@ -13,6 +13,8 @@ import sys
 import glob
 import re
 import json
+import shlex
+import shutil
 import atexit
 import signal
 import subprocess
@@ -163,19 +165,158 @@ SHELL_WRAPPER_SOURCE = os.path.join(SCRIPT_DIR, "shell", "cli_monitor.sh")
 # Claude Code Hooks 注入
 CLAUDE_SETTINGS = os.path.expanduser("~/.claude/settings.json")
 HOOK_MARKER = "CLI_MONITOR_HOOK"  # 用于识别我们注入的 hook
-SIGNAL_FILE = os.path.join(LOG_DIR, "_claude_idle_signal")
-# Hook 命令: Claude 完成回复时写信号文件
-HOOK_COMMAND = (
-    f'CLI_MONITOR_SIGNAL_DIR="{LOG_DIR}"; '
-    'ts=$(date +%s); '
-    'sid="${CLI_MONITOR_SESSION_ID:-}"; '
-    'if [ -n "$sid" ]; then '
-    'printf "%s\\n" "$ts" > "$CLI_MONITOR_SIGNAL_DIR/_claude_idle_signal_$sid"; '
-    'else '
-    f'printf "%s\\n" "$ts" > "{SIGNAL_FILE}"; '
-    'fi '
-    f'# {HOOK_MARKER}'
+HOOK_STOP_MARKER = f"{HOOK_MARKER}:stop"
+HOOK_NOTIFICATION_MARKER = f"{HOOK_MARKER}:notification"
+CLAUDE_IDLE_SIGNAL_FILE = os.path.join(LOG_DIR, "_claude_idle_signal")
+CLAUDE_NOTIFY_SIGNAL_FILE = os.path.join(LOG_DIR, "_claude_notify_signal")
+
+
+def _build_claude_stop_hook_command():
+    # Hook 命令: Claude 完成回复时写 IDLE 信号文件
+    return (
+        f'CLI_MONITOR_SIGNAL_DIR="{LOG_DIR}"; '
+        'ts=$(date +%s); '
+        'sid="${CLI_MONITOR_SESSION_ID:-}"; '
+        'if [ -n "$sid" ]; then '
+        'printf "%s\\n" "$ts" > "$CLI_MONITOR_SIGNAL_DIR/_claude_idle_signal_$sid"; '
+        'else '
+        f'printf "%s\\n" "$ts" > "{CLAUDE_IDLE_SIGNAL_FILE}"; '
+        'fi '
+        f'# {HOOK_STOP_MARKER}'
+    )
+
+
+def _build_claude_notification_hook_command():
+    # Hook 命令: Claude Notification 事件写入结构化 JSONL 文件
+    py_code = """
+import json
+import os
+import re
+import sys
+import time
+
+
+def _first_nonempty(values):
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _walk_texts(value, out):
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            out.append(text)
+        return
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            if key in {"prompt", "message", "text", "title", "subtitle", "content", "reason", "description"}:
+                _walk_texts(sub, out)
+            elif key in {"options", "choices", "items", "data", "params", "payload", "result", "notification"}:
+                _walk_texts(sub, out)
+        return
+    if isinstance(value, list):
+        for item in value[:20]:
+            _walk_texts(item, out)
+
+
+raw = sys.stdin.read()
+payload = {}
+if raw.strip():
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        payload = {"raw": raw.strip()}
+
+event_name = _first_nonempty(
+    [
+        payload.get("hook_event_name") if isinstance(payload, dict) else "",
+        payload.get("event") if isinstance(payload, dict) else "",
+        payload.get("type") if isinstance(payload, dict) else "",
+        payload.get("name") if isinstance(payload, dict) else "",
+    ]
 )
+event_lower = event_name.lower()
+texts = []
+_walk_texts(payload, texts)
+joined_text = " | ".join(texts[:8])
+joined_lower = joined_text.lower()
+
+state = ""
+if any(token in event_lower for token in ("waiting", "input", "prompt", "confirmation", "confirm", "approval", "select", "choice")):
+    state = "WAITING"
+
+if not state and any(
+    token in joined_lower
+    for token in (
+        "do you want to",
+        "would you like to",
+        "yes/no",
+        "(y/n)",
+        "confirm",
+        "select",
+        "choose",
+        "press enter",
+        "save file to continue",
+    )
+):
+    state = "WAITING"
+
+if not state:
+    for item in texts[:12]:
+        if re.search(r"^\\d+\\.\\s+\\S+", item):
+            state = "WAITING"
+            break
+
+message = _first_nonempty(texts)[:160]
+if state == "WAITING":
+    for item in texts:
+        candidate = item.strip()
+        if candidate and not re.search(r"^\\d+\\.\\s*", candidate):
+            message = candidate[:160]
+            break
+
+if not message:
+    if state == "WAITING":
+        message = "等待确认输入"
+
+# 仅对 WAITING 状态落盘，IDLE 统一由 Stop Hook 负责。
+if state != "WAITING":
+    raise SystemExit(0)
+
+sid = str(os.environ.get("CLI_MONITOR_SESSION_ID", "") or "").strip()
+log_file = str(os.environ.get("CLI_MONITOR_LOG_FILE", "") or "").strip()
+now = time.time()
+
+record = {
+    "ts": int(now),
+    "ts_ms": int(now * 1000),
+    "event": event_name,
+    "state": state,
+    "message": message,
+    "session_id": sid,
+    "log_file": log_file,
+}
+
+signal_dir = str(os.environ.get("CLI_MONITOR_SIGNAL_DIR", "") or "").strip()
+if signal_dir:
+    os.makedirs(signal_dir, exist_ok=True)
+    filename = f"_claude_notify_signal_{sid}" if sid else "_claude_notify_signal"
+    path = os.path.join(signal_dir, filename)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\\n")
+""".strip()
+    return (
+        f'CLI_MONITOR_SIGNAL_DIR="{LOG_DIR}" '
+        f"python3 -c {shlex.quote(py_code)} "
+        f"# {HOOK_NOTIFICATION_MARKER}"
+    )
+
+
+HOOK_COMMAND_STOP = _build_claude_stop_hook_command()
+HOOK_COMMAND_NOTIFICATION = _build_claude_notification_hook_command()
 
 _cleanup_done = False
 
@@ -194,6 +335,15 @@ E2E_PORT = int(os.environ.get("CLI_MONITOR_E2E_PORT", "18787"))
 _e2e_server = None
 _settings_lock = threading.Lock()
 _settings_cache = None
+_claude_cli_capabilities = {
+    "claude_cli": "unsupported",
+    "remote_control": "unsupported",
+    "remote_control_account": "unknown",
+    "stream_json": "unsupported",
+    "remote_control_hint": "",
+}
+_claude_cli_capabilities_checked_at = 0
+_claude_cli_capabilities_lock = threading.Lock()
 
 
 def _normalize_language(lang):
@@ -265,6 +415,79 @@ def _t(key, lang=None, **kwargs):
         except Exception:
             return str(value)
     return str(value)
+
+
+def _detect_claude_cli_capabilities():
+    caps = {
+        "claude_cli": "unsupported",
+        "remote_control": "unsupported",
+        "remote_control_account": "unknown",
+        "stream_json": "unsupported",
+        "remote_control_hint": "",
+    }
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return caps
+    caps["claude_cli"] = "supported"
+
+    help_text = ""
+    try:
+        res = subprocess.run(
+            [claude_bin, "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.5,
+        )
+        help_text = " ".join([str(res.stdout or ""), str(res.stderr or "")]).lower()
+        if "--output-format" in help_text or "stream-json" in help_text:
+            caps["stream_json"] = "supported"
+    except Exception:
+        pass
+
+    remote_candidate = "remote-control" in help_text
+    if remote_candidate:
+        caps["remote_control"] = "supported"
+    try:
+        res = subprocess.run(
+            [claude_bin, "remote-control", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.5,
+        )
+        text = " ".join([str(res.stdout or ""), str(res.stderr or "")]).lower()
+        if "not enabled for your account" in text or "contact your administrator" in text:
+            # 能力本身存在，但当前账号未开通。
+            caps["remote_control"] = "supported"
+            caps["remote_control_account"] = "disabled"
+            caps["remote_control_hint"] = "account_disabled"
+        elif res.returncode == 0 or "remote-control" in text:
+            caps["remote_control"] = "supported"
+            caps["remote_control_account"] = "enabled"
+        elif not remote_candidate:
+            caps["remote_control"] = "unsupported"
+            caps["remote_control_account"] = "unknown"
+    except Exception:
+        if not remote_candidate:
+            caps["remote_control"] = "unsupported"
+            caps["remote_control_account"] = "unknown"
+    return caps
+
+
+def _refresh_claude_cli_capabilities():
+    global _claude_cli_capabilities, _claude_cli_capabilities_checked_at
+    caps = _detect_claude_cli_capabilities()
+    now_ts = int(time.time())
+    with _claude_cli_capabilities_lock:
+        _claude_cli_capabilities = dict(caps)
+        _claude_cli_capabilities_checked_at = now_ts
+    return dict(_claude_cli_capabilities), _claude_cli_capabilities_checked_at
+
+
+def _get_claude_cli_capabilities():
+    with _claude_cli_capabilities_lock:
+        return dict(_claude_cli_capabilities), int(_claude_cli_capabilities_checked_at or 0)
 
 
 # ===========================================
@@ -355,7 +578,7 @@ def cleanup_shell_wrapper():
 
 
 def inject_claude_hooks():
-    """将 Stop hook 注入到 ~/.claude/settings.json"""
+    """将 Claude Hooks 注入到 ~/.claude/settings.json (Stop + Notification)."""
     if not os.path.exists(os.path.dirname(CLAUDE_SETTINGS)):
         print("[CLI Monitor] ⏭️  未检测到 Claude Code, 跳过 Hooks 注入")
         return False
@@ -367,34 +590,66 @@ def inject_claude_hooks():
             with open(CLAUDE_SETTINGS, "r") as f:
                 settings = json.load(f)
 
-        # 检查是否已注入
         hooks = settings.get("hooks", {})
-        stop_hooks = hooks.get("Stop", [])
-        for entry in stop_hooks:
-            for h in entry.get("hooks", []):
-                if HOOK_MARKER in h.get("command", ""):
-                    print("[CLI Monitor] ✅ Claude Hooks 已存在, 跳过")
-                    return True
+        if not isinstance(hooks, dict):
+            hooks = {}
 
-        # 添加 Stop hook
-        our_hook = {
-            "matcher": "",
-            "hooks": [
+        def _ensure_hook(event_name, marker, command, matcher=""):
+            entries = hooks.get(event_name, [])
+            if not isinstance(entries, list):
+                entries = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                entry_hooks = entry.get("hooks", [])
+                if not isinstance(entry_hooks, list):
+                    continue
+                for item in entry_hooks:
+                    if not isinstance(item, dict):
+                        continue
+                    old_command = str(item.get("command", ""))
+                    if marker not in old_command and HOOK_MARKER not in old_command:
+                        continue
+                    changed = False
+                    if old_command != command:
+                        item["command"] = command
+                        changed = True
+                    if str(entry.get("matcher", "") or "") != str(matcher or ""):
+                        entry["matcher"] = str(matcher or "")
+                        changed = True
+                    hooks[event_name] = entries
+                    return changed
+            entries.append(
                 {
-                    "type": "command",
-                    "command": HOOK_COMMAND,
+                    "matcher": str(matcher or ""),
+                    "hooks": [{"type": "command", "command": command}],
                 }
-            ],
-        }
-        stop_hooks.append(our_hook)
-        hooks["Stop"] = stop_hooks
+            )
+            hooks[event_name] = entries
+            return True
+
+        added = []
+        if _ensure_hook("Stop", HOOK_STOP_MARKER, HOOK_COMMAND_STOP, matcher=""):
+            added.append("Stop")
+        if _ensure_hook(
+            "Notification",
+            HOOK_NOTIFICATION_MARKER,
+            HOOK_COMMAND_NOTIFICATION,
+            matcher="",
+        ):
+            added.append("Notification")
+
+        if not added:
+            print("[CLI Monitor] ✅ Claude Hooks 已存在, 跳过")
+            return True
+
         settings["hooks"] = hooks
 
         # 写回
         with open(CLAUDE_SETTINGS, "w") as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
 
-        print("[CLI Monitor] ✅ Claude Hooks 已注入 (Stop → 写信号文件)")
+        print(f"[CLI Monitor] ✅ Claude Hooks 已注入 ({', '.join(added)})")
         return True
     except Exception as e:
         print(f"[CLI Monitor] ⚠️  Claude Hooks 注入失败: {e}")
@@ -411,34 +666,56 @@ def cleanup_claude_hooks():
             settings = json.load(f)
 
         hooks = settings.get("hooks", {})
-        stop_hooks = hooks.get("Stop", [])
+        new_hooks = {}
+        removed = 0
+        if isinstance(hooks, dict):
+            for event_name, entries in hooks.items():
+                if not isinstance(entries, list):
+                    new_hooks[event_name] = entries
+                    continue
+                new_entries = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        new_entries.append(entry)
+                        continue
+                    entry_hooks = entry.get("hooks", [])
+                    if not isinstance(entry_hooks, list):
+                        new_entries.append(entry)
+                        continue
+                    clean = []
+                    for h in entry_hooks:
+                        if not isinstance(h, dict):
+                            clean.append(h)
+                            continue
+                        cmd = str(h.get("command", ""))
+                        if HOOK_MARKER in cmd:
+                            removed += 1
+                            continue
+                        clean.append(h)
+                    if clean:
+                        new_entry = dict(entry)
+                        new_entry["hooks"] = clean
+                        new_entries.append(new_entry)
+                if new_entries:
+                    new_hooks[event_name] = new_entries
 
-        # 过滤掉包含我们标记的条目
-        filtered = []
-        for entry in stop_hooks:
-            entry_hooks = entry.get("hooks", [])
-            clean = [h for h in entry_hooks if HOOK_MARKER not in h.get("command", "")]
-            if clean:
-                entry["hooks"] = clean
-                filtered.append(entry)
-
-        if filtered:
-            hooks["Stop"] = filtered
+        if new_hooks:
+            settings["hooks"] = new_hooks
         else:
-            hooks.pop("Stop", None)
-
-        # 如果 hooks 为空, 移除整个字段
-        if not hooks:
             settings.pop("hooks", None)
 
         with open(CLAUDE_SETTINGS, "w") as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
 
         # 清理信号文件
-        if os.path.exists(SIGNAL_FILE):
-            os.remove(SIGNAL_FILE)
+        for pattern in ("_claude_idle_signal*", "_claude_notify_signal*"):
+            for path in glob.glob(os.path.join(LOG_DIR, pattern)):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
-        print("[CLI Monitor] ✅ Claude Hooks 已清理")
+        print(f"[CLI Monitor] ✅ Claude Hooks 已清理 (removed={removed})")
     except Exception as e:
         print(f"[CLI Monitor] ⚠️  Claude Hooks 清理失败: {e}")
 
@@ -1175,6 +1452,9 @@ class Api:
         self._last_notify_time = {}  # Key: "filepath:status" -> timestamp
         self._last_signal_ts = {}    # Key: log_file -> last_notified_signal_ts
         self._task_states = {}       # Key: log_file -> last_status
+        self._last_event_key = {}    # Key: log_file -> last_event_dedupe_key
+        self._last_event_priority = {}  # Key: log_file -> last_event_priority
+        self._last_event_time = {}   # Key: log_file -> last_event_notify_time
         self._first_run = True       # 启动时不通知
         self._unread_notification_count = 0  # 未读通知数 (用于状态栏角标)
         self._unread_by_task = {}    # Key: log_file -> unread_count
@@ -1183,9 +1463,12 @@ class Api:
 
     def get_settings(self):
         settings = get_app_settings()
+        caps, checked_at = _get_claude_cli_capabilities()
         return {
             "language": _normalize_language(settings.get("language")),
             "supported_languages": list(SUPPORTED_LANGUAGES),
+            "claude_capabilities": caps,
+            "claude_capabilities_checked_at": checked_at,
         }
 
     def set_language(self, lang):
@@ -1194,6 +1477,14 @@ class Api:
             "ok": True,
             "language": applied,
             "supported_languages": list(SUPPORTED_LANGUAGES),
+        }
+
+    def refresh_claude_capabilities(self):
+        caps, checked_at = _refresh_claude_cli_capabilities()
+        return {
+            "ok": True,
+            "claude_capabilities": caps,
+            "claude_capabilities_checked_at": checked_at,
         }
 
     def get_tasks(self):
@@ -1336,9 +1627,77 @@ class Api:
             pass
         return re.sub(r"\s+", " ", fallback)
 
+    def _normalize_event_text(self, text, limit=120):
+        s = strip_ansi_text(str(text or ""))
+        s = re.sub(r"[\x00-\x1f\x7f]", "", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if len(s) > limit:
+            s = s[-limit:]
+        return s
+
+    def _build_notification_event(self, task, prev_status):
+        """
+        统一通知事件建模:
+        - WAITING 优先级最高
+        - IDLE(signal_ts) 次之 (hook/结构化事件)
+        - IDLE(text) 最低 (纯文本推断)
+        """
+        status = str(task.get("status", "") or "").upper()
+        log_file = str(task.get("log_file", "") or "").strip()
+        if not log_file:
+            return None
+
+        if status == "WAITING":
+            waiting_fp = self._build_waiting_fingerprint(task)
+            prev_waiting_fp = self._last_waiting_fingerprint.get(log_file, "")
+            self._last_waiting_fingerprint[log_file] = waiting_fp
+            fp_key = self._normalize_event_text(waiting_fp, 140)
+            if status == prev_status and fp_key == self._normalize_event_text(prev_waiting_fp, 140):
+                return None
+            return {
+                "status": status,
+                "priority": 300,
+                "signal_ts": 0,
+                "dedupe_key": f"{log_file}:WAITING:{fp_key}",
+            }
+
+        self._last_waiting_fingerprint.pop(log_file, None)
+
+        if status != "IDLE":
+            return None
+
+        signal_ts = int(task.get("signal_ts", 0) or 0)
+        if signal_ts > 0:
+            return {
+                "status": status,
+                "priority": 200,
+                "signal_ts": signal_ts,
+                "dedupe_key": f"{log_file}:IDLE:signal:{signal_ts}",
+            }
+
+        # Claude 在无 hook 信号时的 IDLE 大多来自文本推断，容易误报；保持保守策略。
+        if str(task.get("tool", "") or "").lower() == "claude":
+            return None
+
+        # text-idle 只在状态边沿触发，避免持续重复。
+        if status == prev_status:
+            return None
+
+        msg_key = self._normalize_event_text(task.get("message", ""), 80)
+        if not msg_key:
+            msg_key = self._normalize_event_text(task.get("subtitle", ""), 80)
+        return {
+            "status": status,
+            "priority": 100,
+            "signal_ts": 0,
+            "dedupe_key": f"{log_file}:IDLE:text:{msg_key}",
+        }
+
     def _check_notifications(self, tasks):
         now = time.time()
-        
+        live_log_files = {str(t.get("log_file", "") or "").strip() for t in tasks}
+        live_log_files.discard("")
+
         # 首次运行: 仅初始化状态, 不发通知
         if self._first_run:
             for task in tasks:
@@ -1353,8 +1712,7 @@ class Api:
             log_file = task["log_file"]
             status = task["status"]
             prev_status = self._task_states.get(log_file)
-            signal_ts = task.get("signal_ts", 0)
-            
+
             # 更新状态记录
             self._task_states[log_file] = status
 
@@ -1362,61 +1720,78 @@ class Api:
             # 这说明对应提醒已被处理，自动清理该任务未读计数。
             if status == "RUNNING" and prev_status in {"WAITING", "IDLE"}:
                 self._clear_unread_for_task(log_file)
-            if status != "WAITING":
-                self._last_waiting_fingerprint.pop(log_file, None)
 
-            if status == "WAITING":
-                # WAITING 使用 "状态边沿 + 等待内容指纹" 触发，覆盖同状态下菜单项变化。
-                waiting_fp = self._build_waiting_fingerprint(task)
-                prev_waiting_fp = self._last_waiting_fingerprint.get(log_file, "")
-                self._last_waiting_fingerprint[log_file] = waiting_fp
-                if status == prev_status and waiting_fp == prev_waiting_fp:
+            event = self._build_notification_event(task, prev_status)
+            if not event:
+                continue
+
+            dedupe_key = str(event.get("dedupe_key", "") or "")
+            if not dedupe_key:
+                continue
+
+            if now - self._last_notify_time.get(dedupe_key, 0) < 5:
+                continue
+
+            last_key = self._last_event_key.get(log_file, "")
+            if last_key == dedupe_key:
+                continue
+
+            priority = int(event.get("priority", 0) or 0)
+            last_priority = int(self._last_event_priority.get(log_file, 0) or 0)
+            last_event_time = float(self._last_event_time.get(log_file, 0) or 0)
+            # 抑制同任务短时间内的“优先级回落”通知，减少状态抖动噪音。
+            if priority < last_priority and (now - last_event_time) < 8:
+                continue
+
+            signal_ts = int(event.get("signal_ts", 0) or 0)
+            if signal_ts > 0 and signal_ts <= int(self._last_signal_ts.get(log_file, 0) or 0):
+                continue
+
+            title, subtitle, body = _build_notification_payload(task)
+            send_notification(title, subtitle, body)
+
+            self._last_notify_time[dedupe_key] = now
+            self._last_event_key[log_file] = dedupe_key
+            self._last_event_priority[log_file] = priority
+            self._last_event_time[log_file] = now
+            if signal_ts > 0:
+                self._last_signal_ts[log_file] = signal_ts
+            self._mark_notification_seen_or_unread(log_file)
+
+        # 清理已不存在任务的事件状态，避免缓存无限增长。
+        for mapping in (
+            self._task_states,
+            self._last_signal_ts,
+            self._last_waiting_fingerprint,
+            self._last_event_key,
+            self._last_event_priority,
+            self._last_event_time,
+        ):
+            for key in list(mapping.keys()):
+                if key not in live_log_files:
+                    mapping.pop(key, None)
+
+        removed_unread = 0
+        for key in list(self._unread_by_task.keys()):
+            if key not in live_log_files:
+                removed_unread += int(self._unread_by_task.pop(key, 0) or 0)
+        if removed_unread > 0:
+            self._unread_notification_count = max(
+                0, self._unread_notification_count - removed_unread
+            )
+
+        # last_notify_time 是按事件维度缓存，做按任务+时间窗口清理避免无限增长。
+        for key, ts in list(self._last_notify_time.items()):
+            try:
+                key_str = str(key or "")
+                key_log = key_str.split(":", 1)[0]
+                if key_log and key_log not in live_log_files:
+                    self._last_notify_time.pop(key, None)
                     continue
-
-                fp_key = re.sub(r"\s+", " ", waiting_fp).strip()
-                if len(fp_key) > 120:
-                    fp_key = fp_key[-120:]
-                key = f"{log_file}:WAITING:{fp_key}"
-                if now - self._last_notify_time.get(key, 0) < 5: continue
-
-                title, subtitle, body = _build_notification_payload(task)
-                send_notification(title, subtitle, body)
-                self._last_notify_time[key] = now
-                self._mark_notification_seen_or_unread(log_file)
-            
-            elif status == "IDLE":
-                # IDLE 使用 Signal Timestamp 去重逻辑
-                if signal_ts > 0:
-                    # 拥有有效信号 (来自 Hook)
-                    last_ts = self._last_signal_ts.get(log_file, 0)
-                    if signal_ts > last_ts:
-                        # 这是一个新的完成信号 -> 通知
-                        title, subtitle, body = _build_notification_payload(task)
-                        send_notification(title, subtitle, body)
-                        self._last_signal_ts[log_file] = signal_ts
-                        # 同时更新 notify time 用于 debounce 兼容
-                        self._last_notify_time[f"{log_file}:IDLE"] = now
-                        self._mark_notification_seen_or_unread(log_file)
-                    else:
-                        # 信号时间戳未变 -> 说明是同一个完成事件 -> 忽略
-                        pass
-                else:
-                    # 无信号 (纯 Regex/Rate 检测)
-                    # 对于 Claude: 如果 Hook 没触发 (signal_ts=0), 我们假设这是用户输入/Prompt匹配
-                    # 我们不仅不通知，甚至可能想忽略它。
-                    # 但为了安全，如果工具是 Claude, 且没有信号，我们 *跳过通知*
-                    if task["tool"] == "claude":
-                        continue 
-
-                    # 对于其他工具 (e.g. mvn/gradle): 使用 Edge Trigger
-                    if status == prev_status: continue
-                    key = f"{log_file}:IDLE"
-                    if now - self._last_notify_time.get(key, 0) < 5: continue
-
-                    title, subtitle, body = _build_notification_payload(task)
-                    send_notification(title, subtitle, body)
-                    self._last_notify_time[key] = now
-                    self._mark_notification_seen_or_unread(log_file)
+                if now - float(ts or 0) > 600:
+                    self._last_notify_time.pop(key, None)
+            except Exception:
+                self._last_notify_time.pop(key, None)
 
     def open_logs(self):
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -1427,6 +1802,14 @@ class Api:
         try:
             self._clear_unread_for_task(log_file)
             self._last_waiting_fingerprint.pop(log_file, None)
+            self._task_states.pop(log_file, None)
+            self._last_signal_ts.pop(log_file, None)
+            self._last_event_key.pop(log_file, None)
+            self._last_event_priority.pop(log_file, None)
+            self._last_event_time.pop(log_file, None)
+            for key in list(self._last_notify_time.keys()):
+                if str(key).startswith(f"{log_file}:"):
+                    self._last_notify_time.pop(key, None)
             if os.path.exists(log_file) and log_file.startswith(LOG_DIR):
                 os.remove(log_file)
                 # 清理速率跟踪历史, 避免内存泄漏
@@ -1479,12 +1862,15 @@ class Api:
     def debug_get_state(self):
         if not E2E_MODE:
             return {"enabled": False}
+        caps, checked_at = _get_claude_cli_capabilities()
         return {
             "enabled": True,
             "unread_notification_count": self._unread_notification_count,
             "last_focus_result": self._last_focus_result,
             "window_visible": bool(_window_visible),
             "codex_parse_stats": get_codex_parse_stats(),
+            "claude_cli_capabilities": caps,
+            "claude_cli_capabilities_checked_at": checked_at,
         }
 
     def debug_set_unread_count(self, count):
@@ -1609,6 +1995,9 @@ def main():
     _log("main() 开始")
     os.makedirs(LOG_DIR, exist_ok=True)
     cleanup_stale_logs()  # <--- 启动时清理
+
+    caps, checked_at = _refresh_claude_cli_capabilities()
+    _log(f"claude capabilities: {caps} checked_at={checked_at}")
 
     inject_shell_wrapper()
     inject_claude_hooks()

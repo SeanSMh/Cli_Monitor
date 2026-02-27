@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -39,7 +40,11 @@ class AnalyzeLogTests(unittest.TestCase):
             sys.modules.pop(mod_name, None)
 
         self.monitor = importlib.import_module("monitor")
+        self.monitor.DEFAULT_LOG_DIR = str(self.tmp_path / "logs")
         self.monitor.SIGNAL_FILE = str(self.tmp_path / "_claude_idle_signal")
+        self.monitor.CLAUDE_NOTIFY_SIGNAL_FILE = str(
+            self.tmp_path / "_claude_notify_signal"
+        )
 
     def test_analyze_log_done_status_and_duration(self):
         log = self.tmp_path / "logs" / "codex_1_2_3.log"
@@ -88,6 +93,161 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "IDLE")
         self.assertEqual(msg, "AI 已完成回复")
         self.assertGreater(signal_ts, 0)
+
+    def test_analyze_log_claude_notification_waiting(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["Thinking...\n"])
+
+        notify_file = Path(self.monitor.CLAUDE_NOTIFY_SIGNAL_FILE)
+        notify_file.parent.mkdir(parents=True, exist_ok=True)
+        notify_payload = {
+            "state": "WAITING",
+            "message": "Do you want to proceed?",
+            "session_id": "claude_1_2_3",
+            "log_file": str(log),
+        }
+        notify_file.write_text(
+            json.dumps(notify_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, status, msg, _, _, signal_ts = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("Do you want to proceed?", msg)
+        self.assertEqual(signal_ts, 0)
+
+    def test_analyze_log_claude_notification_overrides_idle_when_newer(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["Thinking...\n"])
+
+        idle_signal = Path(self.monitor.SIGNAL_FILE)
+        idle_signal.parent.mkdir(parents=True, exist_ok=True)
+        idle_signal.write_text("ok", encoding="utf-8")
+        os.utime(idle_signal, (1, 1))
+
+        notify_file = Path(self.monitor.CLAUDE_NOTIFY_SIGNAL_FILE)
+        notify_file.parent.mkdir(parents=True, exist_ok=True)
+        notify_payload = {
+            "state": "WAITING",
+            "message": "Select an option",
+            "session_id": "claude_1_2_3",
+            "log_file": str(log),
+        }
+        notify_file.write_text(
+            json.dumps(notify_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, status, msg, _, _, signal_ts = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("Select an option", msg)
+        self.assertEqual(signal_ts, 0)
+
+    def test_analyze_log_claude_waiting_wins_when_same_second_as_idle_signal(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["Thinking...\n"])
+
+        idle_signal = Path(self.monitor.SIGNAL_FILE)
+        idle_signal.parent.mkdir(parents=True, exist_ok=True)
+        idle_signal.write_text("ok", encoding="utf-8")
+        idle_mtime = os.path.getmtime(idle_signal)
+
+        notify_file = Path(self.monitor.CLAUDE_NOTIFY_SIGNAL_FILE)
+        notify_file.parent.mkdir(parents=True, exist_ok=True)
+        notify_payload = {
+            "state": "WAITING",
+            "message": "Do you want to proceed?",
+            "ts_ms": int(idle_mtime * 1000),
+            "session_id": "claude_1_2_3",
+            "log_file": str(log),
+        }
+        notify_file.write_text(
+            json.dumps(notify_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("Do you want to proceed", msg)
+
+    def test_analyze_log_ignores_global_notify_event_from_other_session(self):
+        log1 = self.tmp_path / "logs" / "claude_1_2_3.log"
+        log2 = self.tmp_path / "logs" / "claude_1_2_4.log"
+        _write_log(log1, "claude", ["Thinking...\n"])
+        _write_log(log2, "claude", ["Thinking...\n"])
+
+        notify_file = Path(self.monitor.CLAUDE_NOTIFY_SIGNAL_FILE)
+        notify_file.parent.mkdir(parents=True, exist_ok=True)
+        notify_payload = {
+            "state": "WAITING",
+            "message": "Apply changes?",
+            "session_id": "claude_1_2_4",
+            "log_file": str(log2),
+        }
+        notify_file.write_text(
+            json.dumps(notify_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, status, _, _, _, _ = self.monitor.analyze_log(str(log1))
+        self.assertEqual(status, "RUNNING")
+
+    def test_analyze_log_claude_does_not_idle_on_cost_line_alone(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["Cost: $0.12\n"])
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertIn("Cost:", msg)
+
+    def test_analyze_log_claude_notification_idle_compatibility(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["Thinking...\n"])
+
+        notify_file = Path(self.monitor.CLAUDE_NOTIFY_SIGNAL_FILE)
+        notify_file.parent.mkdir(parents=True, exist_ok=True)
+        notify_payload = {
+            "state": "IDLE",
+            "message": "Turn completed",
+            "session_id": "claude_1_2_3",
+            "log_file": str(log),
+        }
+        notify_file.write_text(
+            json.dumps(notify_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, status, msg, _, _, signal_ts = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "IDLE")
+        self.assertIn("Turn completed", msg)
+        self.assertGreater(signal_ts, 0)
+
+    def test_analyze_log_records_claude_parse_stats(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["Thinking...\n"])
+
+        notify_file = Path(self.monitor.CLAUDE_NOTIFY_SIGNAL_FILE)
+        notify_file.parent.mkdir(parents=True, exist_ok=True)
+        notify_payload = {
+            "state": "WAITING",
+            "message": "Do you want to proceed?",
+            "session_id": "claude_1_2_3",
+            "log_file": str(log),
+        }
+        notify_file.write_text(
+            json.dumps(notify_payload, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        _, status, _, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+
+        stats = self.monitor.get_claude_parse_stats()
+        self.assertEqual(stats["notify_waiting_hit_count"], 1)
+        self.assertEqual(stats["notify_idle_hit_count"], 0)
+        self.assertEqual(stats["stop_idle_hit_count"], 0)
+        self.assertEqual(stats["text_fallback_hit_count"], 0)
+        self.assertEqual(stats["last_source"], "notify_waiting")
 
     def test_analyze_log_rate_based_idle(self):
         log = self.tmp_path / "logs" / "npm_1_2_3.log"

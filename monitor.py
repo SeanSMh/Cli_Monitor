@@ -12,6 +12,7 @@ import sys
 import time
 import glob
 import re
+import json
 import argparse
 from itertools import islice
 from collections import defaultdict
@@ -49,6 +50,7 @@ DISPLAY_TAIL_LINES = 5
 
 RATE_HISTORY_SIZE = 30
 SIGNAL_FILE = os.path.join(DEFAULT_LOG_DIR, "_claude_idle_signal")
+CLAUDE_NOTIFY_SIGNAL_FILE = os.path.join(DEFAULT_LOG_DIR, "_claude_notify_signal")
 SIGNAL_MAX_AGE = 3600
 
 # ANSI 颜色/样式代码
@@ -97,6 +99,16 @@ _codex_parse_stats = {
     "last_source": "",
 }
 
+_claude_parse_stats_lock = Lock()
+_claude_parse_stats = {
+    "notify_waiting_hit_count": 0,
+    "notify_idle_hit_count": 0,
+    "stop_idle_hit_count": 0,
+    "text_fallback_hit_count": 0,
+    "total_claude_samples": 0,
+    "last_source": "",
+}
+
 
 def _record_codex_parse_hit(source: str):
     source_key = str(source or "").strip().lower()
@@ -132,6 +144,34 @@ def get_codex_parse_stats():
         data.get("text_hit_count", 0) or 0
     )
     data["fallback_rate"] = fallback_hits / float(total)
+    return data
+
+
+def _record_claude_parse_hit(source: str):
+    source_key = str(source or "").strip().lower()
+    if source_key not in {"notify_waiting", "notify_idle", "stop_idle", "text_fallback"}:
+        return
+    with _claude_parse_stats_lock:
+        if source_key == "notify_waiting":
+            _claude_parse_stats["notify_waiting_hit_count"] += 1
+        elif source_key == "notify_idle":
+            _claude_parse_stats["notify_idle_hit_count"] += 1
+        elif source_key == "stop_idle":
+            _claude_parse_stats["stop_idle_hit_count"] += 1
+        else:
+            _claude_parse_stats["text_fallback_hit_count"] += 1
+        _claude_parse_stats["total_claude_samples"] += 1
+        _claude_parse_stats["last_source"] = source_key
+
+
+def get_claude_parse_stats():
+    with _claude_parse_stats_lock:
+        data = dict(_claude_parse_stats)
+    total = max(1, int(data.get("total_claude_samples", 0) or 0))
+    signal_hits = int(data.get("notify_waiting_hit_count", 0) or 0) + int(
+        data.get("notify_idle_hit_count", 0) or 0
+    ) + int(data.get("stop_idle_hit_count", 0) or 0)
+    data["signal_rate"] = signal_hits / float(total)
     return data
 
 
@@ -287,16 +327,206 @@ def parse_end_info(lines):
     return False, -1, ""
 
 
-def _claude_signal_candidates_for_log(filepath):
+def _claude_session_id_for_log(filepath):
+    try:
+        stem = os.path.splitext(os.path.basename(str(filepath or "")))[0].strip()
+        return stem
+    except Exception:
+        return ""
+
+
+def _claude_notify_signal_candidates_for_log(filepath):
     candidates = []
     try:
         stem = os.path.splitext(os.path.basename(str(filepath or "")))[0].strip()
         if stem:
-            candidates.append(os.path.join(DEFAULT_LOG_DIR, f"_claude_idle_signal_{stem}"))
+            candidates.append(os.path.join(DEFAULT_LOG_DIR, f"_claude_notify_signal_{stem}"))
     except Exception:
         pass
-    candidates.append(SIGNAL_FILE)  # backward compatibility for older hook payloads
+    candidates.append(CLAUDE_NOTIFY_SIGNAL_FILE)  # backward compatibility for older hook payloads
     return candidates
+
+
+def _normalize_path_for_compare(path):
+    s = str(path or "").strip()
+    if not s:
+        return ""
+    try:
+        return os.path.realpath(os.path.abspath(s))
+    except Exception:
+        return s
+
+
+def _paths_match(a, b):
+    pa = _normalize_path_for_compare(a)
+    pb = _normalize_path_for_compare(b)
+    return bool(pa and pb and pa == pb)
+
+
+def _parse_claude_event_ts(payload, file_mtime):
+    ts_val = payload.get("ts_ms", 0)
+    try:
+        ts_ms = float(ts_val or 0)
+    except Exception:
+        ts_ms = 0.0
+    if ts_ms > 0:
+        return ts_ms / 1000.0
+
+    ts_val = payload.get("ts", 0)
+    try:
+        ts = float(ts_val or 0)
+    except Exception:
+        ts = 0.0
+    if ts > 0:
+        return ts
+    return float(file_mtime or 0)
+
+
+def _payload_matches_claude_log(payload, expected_session_id, expected_log_file, signal_file):
+    sid = str(payload.get("session_id", "") or "").strip()
+    payload_log = str(payload.get("log_file", "") or "").strip()
+
+    session_match = bool(expected_session_id and sid and sid == expected_session_id)
+    log_match = bool(payload_log and expected_log_file and _paths_match(payload_log, expected_log_file))
+
+    if sid and expected_session_id and sid != expected_session_id:
+        return False
+    if payload_log and expected_log_file and not log_match:
+        return False
+    if session_match or log_match:
+        return True
+
+    signal_basename = os.path.basename(str(signal_file or ""))
+    global_basename = os.path.basename(str(CLAUDE_NOTIFY_SIGNAL_FILE or ""))
+    is_global_fallback = bool(signal_basename and global_basename and signal_basename == global_basename)
+    if is_global_fallback:
+        # 全局 fallback 文件没有会话字段时不可信，避免多会话串扰。
+        return False
+    return True
+
+
+def _normalize_claude_signal_message(message, fallback):
+    text = strip_ansi_text(str(message or "")).strip()
+    text = re.sub(r"[\x00-\x1f\x7f]", "", text)
+    if not text:
+        return fallback
+    return text[:60]
+
+
+def _read_latest_claude_idle_signal_ts(filepath, log_mtime):
+    expected_session = _claude_session_id_for_log(filepath)
+    if expected_session:
+        per_session_file = os.path.join(DEFAULT_LOG_DIR, f"_claude_idle_signal_{expected_session}")
+        if os.path.exists(per_session_file):
+            try:
+                signal_mtime = float(os.path.getmtime(per_session_file))
+                age = time.time() - signal_mtime
+                if age < SIGNAL_MAX_AGE and signal_mtime >= float(log_mtime) - 5:
+                    return signal_mtime
+            except Exception:
+                pass
+
+    # 旧版本全局 fallback: 缩短窗口，降低跨会话误判风险。
+    if os.path.exists(SIGNAL_FILE):
+        try:
+            signal_mtime = float(os.path.getmtime(SIGNAL_FILE))
+            age = time.time() - signal_mtime
+            if age < min(SIGNAL_MAX_AGE, 120) and signal_mtime >= float(log_mtime) - 2:
+                return signal_mtime
+        except Exception:
+            pass
+    return 0.0
+
+
+def _read_latest_claude_notify_event(filepath, log_mtime):
+    best_state = ""
+    best_message = ""
+    best_ts = 0.0
+    expected_session = _claude_session_id_for_log(filepath)
+    expected_log_file = str(filepath or "")
+    for signal_file in _claude_notify_signal_candidates_for_log(filepath):
+        if not os.path.exists(signal_file):
+            continue
+        file_mtime = 0
+        try:
+            file_mtime = os.path.getmtime(signal_file)
+        except Exception:
+            file_mtime = 0
+        if file_mtime <= 0:
+            continue
+        if time.time() - file_mtime > SIGNAL_MAX_AGE:
+            continue
+        if file_mtime < log_mtime - 5:
+            continue
+        lines = tail_read(signal_file, num_bytes=2048)
+        for raw in reversed(lines):
+            line = str(raw or "").strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            state = str(payload.get("state", "") or "").strip().upper()
+            if state not in {"WAITING", "IDLE"}:
+                continue
+            if not _payload_matches_claude_log(
+                payload, expected_session, expected_log_file, signal_file
+            ):
+                continue
+            event_ts = float(_parse_claude_event_ts(payload, file_mtime))
+            age = time.time() - event_ts
+            if age < 0 or age > SIGNAL_MAX_AGE:
+                continue
+            if event_ts < log_mtime - 5:
+                continue
+            message = str(payload.get("message", "") or "").strip()
+            if event_ts >= best_ts:
+                best_ts = event_ts
+                best_state = state
+                best_message = message
+            break
+    return best_state, best_message, best_ts
+
+
+def _analyze_claude_signal_status(filepath):
+    """Claude: Notification 事件优先，其次 Stop-hook idle 信号。"""
+    log_mtime = 0
+    try:
+        log_mtime = os.path.getmtime(filepath)
+    except Exception:
+        log_mtime = 0
+
+    notify_state, notify_message, notify_ts = _read_latest_claude_notify_event(
+        filepath, log_mtime
+    )
+    idle_signal_ts = _read_latest_claude_idle_signal_ts(filepath, log_mtime)
+
+    # 事件优先: 若 Notification 事件更新, 以其状态为准；否则保留 Stop-hook 的完成信号。
+    if notify_state and notify_ts >= (idle_signal_ts - 1e-3):
+        if notify_state == "WAITING":
+            _record_claude_parse_hit("notify_waiting")
+            return (
+                "WAITING",
+                _normalize_claude_signal_message(notify_message, "等待确认输入"),
+                0,
+            )
+        if notify_state == "IDLE":
+            # 兼容窗口: 历史版本可能通过 Notification 直接落 IDLE。
+            _record_claude_parse_hit("notify_idle")
+            return (
+                "IDLE",
+                _normalize_claude_signal_message(notify_message, "AI 已完成回复"),
+                notify_ts,
+            )
+
+    if idle_signal_ts > 0:
+        _record_claude_parse_hit("stop_idle")
+        return ("IDLE", "AI 已完成回复", idle_signal_ts)
+
+    return None
 
 
 def strip_ansi_text(s):
@@ -494,6 +724,7 @@ def analyze_log(filepath):
 
     done_patterns = tool_rules.get("done_patterns", {})
     common_waiting = RULES_CONF.get("common", {}).get("waiting", [])
+    is_claude = tool_name == "claude"
     detect_tail_lines = lines[-STATE_DETECT_TAIL_LINES:]
     display_tail_lines = lines[-DISPLAY_TAIL_LINES:]
 
@@ -536,24 +767,11 @@ def analyze_log(filepath):
                 codex_source=source,
             )
 
-    if tool_name == "claude":
-        log_mtime = 0
-        try:
-            log_mtime = os.path.getmtime(filepath)
-        except Exception:
-            log_mtime = 0
-        for signal_file in _claude_signal_candidates_for_log(filepath):
-            if not os.path.exists(signal_file):
-                continue
-            try:
-                signal_mtime = os.path.getmtime(signal_file)
-                age = time.time() - signal_mtime
-                if age < SIGNAL_MAX_AGE and signal_mtime >= log_mtime - 5:
-                    return _return_status(
-                        tool_name, "IDLE", "AI 已完成回复", -1, "", signal_mtime
-                    )
-            except Exception:
-                continue
+    if is_claude:
+        signal_result = _analyze_claude_signal_status(filepath)
+        if signal_result is not None:
+            status, status_msg, signal_ts = signal_result
+            return _return_status(tool_name, status, status_msg, -1, "", signal_ts)
 
     for pattern in common_waiting:
         if re.search(pattern, context, re.IGNORECASE):
@@ -561,6 +779,8 @@ def analyze_log(filepath):
                 stripped = line.strip()
                 stripped = re.sub(r'[\x00-\x1f\x7f]', '', stripped)
                 if re.search(pattern, stripped, re.IGNORECASE):
+                    if is_claude:
+                        _record_claude_parse_hit("text_fallback")
                     return _return_status(
                         tool_name,
                         "WAITING",
@@ -570,11 +790,16 @@ def analyze_log(filepath):
                         0,
                         codex_source="text",
                     )
+            if is_claude:
+                _record_claude_parse_hit("text_fallback")
             return _return_status(
                 tool_name, "WAITING", last_line[:60], -1, "", 0, codex_source="text"
             )
 
     idle_patterns = tool_rules.get("idle_patterns", []) + RULES_CONF.get("common", {}).get("idle", [])
+    if is_claude:
+        # "Cost:" 仅作辅助信号，不应单独触发 IDLE。
+        idle_patterns = [p for p in idle_patterns if "cost" not in str(p or "").lower()]
     busy_patterns = tool_rules.get("busy_patterns", []) + RULES_CONF.get("common", {}).get("busy", [])
     tool_idle_threshold = tool_rules.get("idle_threshold", IDLE_THRESHOLD_SECONDS)
     try:
@@ -594,15 +819,18 @@ def analyze_log(filepath):
                 last_busy_pos = max(last_busy_pos, m.end())
 
         if last_idle_pos > last_busy_pos:
+            if is_claude:
+                _record_claude_parse_hit("text_fallback")
             return _return_status(
                 tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
             )
 
     was_fast, is_stalled, stall_secs = track_file_rate(filepath)
     if was_fast and is_stalled and stall_secs >= RATE_IDLE_SECONDS:
-        return _return_status(
-            tool_name, "IDLE", "AI 已完成回复", -1, "", 0, codex_source="text"
-        )
+        if not is_claude:
+            return _return_status(
+                tool_name, "IDLE", "AI 已完成回复", -1, "", 0, codex_source="text"
+            )
 
     try:
         mtime = os.path.getmtime(filepath)
@@ -610,23 +838,31 @@ def analyze_log(filepath):
         
         busy_in_tail = any(re.search(p, context, re.IGNORECASE) for p in busy_patterns)
 
-        if not busy_in_tail and idle_seconds > 10: 
+        if not busy_in_tail and idle_seconds > 10:
              broad_lines = lines[-30:] if len(lines) >= 30 else lines
              broad_context = "".join(
                  [strip_ansi_text(l) for l in broad_lines if not is_system_output_line(l)]
              )
              if any(re.search(p, broad_context, re.IGNORECASE) for p in busy_patterns):
-                 return _return_status(
-                     tool_name,
-                     "IDLE",
-                     "AI 已完成回复",
-                     -1,
-                     "",
-                     0,
-                     codex_source="text",
-                 )
+                 if not is_claude:
+                     return _return_status(
+                         tool_name,
+                         "IDLE",
+                         "AI 已完成回复",
+                         -1,
+                         "",
+                         0,
+                         codex_source="text",
+                     )
 
-        if idle_seconds > tool_idle_threshold:
+        if is_claude:
+            # Claude 无 hook 信号时走更保守的纯文本 idle 兜底，减少 RUNNING/IDLE 抖动。
+            if not busy_in_tail and idle_seconds > max(tool_idle_threshold, 30.0):
+                _record_claude_parse_hit("text_fallback")
+                return _return_status(
+                    tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
+                )
+        elif idle_seconds > tool_idle_threshold:
             return _return_status(
                 tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
             )
