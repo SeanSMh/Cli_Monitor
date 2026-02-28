@@ -23,6 +23,14 @@ class AppServerEventParserTests(unittest.TestCase):
         self.assertEqual(status, "WAITING")
         self.assertIn("Pick one", msg)
 
+    def test_detects_waiting_from_single_line_confirm_prompt(self):
+        lines = [
+            '{"jsonrpc":"2.0","method":"turn/input_required","params":{"prompt":"Proceed (y/n)"}}\n'
+        ]
+        status, msg = parse_app_server_status(lines) or ("", "")
+        self.assertEqual(status, "WAITING")
+        self.assertEqual(msg, "Proceed (y/n)")
+
     def test_detects_completed_event(self):
         lines = ['{"jsonrpc":"2.0","method":"turn/completed","params":{"message":"finished"}}\n']
         status, msg = parse_app_server_status(lines) or ("", "")

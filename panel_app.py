@@ -104,6 +104,7 @@ from monitor import (
     tail_read,
     strip_ansi_text,
     is_system_output_line,
+    is_display_noise_line,
     DEFAULT_LOG_DIR,
 )
 from terminal_adapters import SessionMeta, TerminalFocusService
@@ -346,6 +347,28 @@ E2E_PORT = int(os.environ.get("CLI_MONITOR_E2E_PORT", "18787"))
 _e2e_server = None
 _settings_lock = threading.Lock()
 _settings_cache = None
+_WAITING_MENU_LINE_RE = re.compile(r"^\s*(?:[❯›>•*\-]\s*)?\d+[.)]\s+\S+")
+_WAITING_HINT_RE = re.compile(
+    r"(?:do you want to|would you like to|confirm\b|choose\b|select\b|save file to continue|press enter|apply changes\?)",
+    re.IGNORECASE,
+)
+_WAITING_CONFIRM_LINE_RE = re.compile(
+    r"^\s*(?:[❯›>•*\-]\s*)?(?:proceed|continue)\s*(?:\?|\:|\((?:y/n|yes/no)\)|\[(?:y/n|yes/no)\])\s*$",
+    re.IGNORECASE,
+)
+_GENERIC_WAITING_MESSAGES = {
+    "等待确认输入",
+    "Awaiting confirmation",
+    "Need confirmation",
+}
+_SEMANTIC_WAITING_TOOLS = {"claude", "codex"}
+_GENERIC_RUNNING_MESSAGES = {
+    "",
+    "运行中...",
+    "Running...",
+    "初始化...",
+    "Initializing...",
+}
 _claude_cli_capabilities = {
     "claude_cli": "unsupported",
     "remote_control": "unsupported",
@@ -1514,6 +1537,7 @@ class Api:
         self._unread_by_task = {}    # Key: log_file -> unread_count
         self._last_focus_result = {"success": False, "provider": "", "reason": ""}
         self._last_waiting_fingerprint = {}  # Key: log_file -> normalized waiting context
+        self._semantic_waiting_cache = {}  # Key: log_file -> {tool,message,fingerprint}
 
     def get_settings(self):
         settings = get_app_settings()
@@ -1598,6 +1622,10 @@ class Api:
                 except Exception:
                     pass
 
+            status, msg = self._apply_semantic_waiting_hold(
+                log_file, tool_name, status, msg
+            )
+
             msg = re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", msg)
             msg = re.sub(r"[\x00-\x1f\x7f]", "", msg)
             if len(msg) > 40:
@@ -1662,7 +1690,12 @@ class Api:
     def _build_waiting_fingerprint(self, task):
         """为 WAITING 状态构建事件指纹，捕捉同状态下菜单/选项内容变化。"""
         log_file = str(task.get("log_file", "") or "").strip()
+        tool_name = str(task.get("tool", "") or "").strip().lower()
         fallback = str(task.get("message", "") or "").strip()
+        stable_message = self._normalize_event_text(fallback, 140)
+        parts = []
+        if stable_message and stable_message not in _GENERIC_WAITING_MESSAGES:
+            parts.append(stable_message)
         try:
             lines = tail_read(log_file)
             cleaned = []
@@ -1673,13 +1706,177 @@ class Api:
                 s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
                 if not s:
                     continue
-                cleaned.append(s)
+                if is_display_noise_line(s, tool_name):
+                    continue
+                if (
+                    _WAITING_MENU_LINE_RE.search(s)
+                    or _WAITING_HINT_RE.search(s)
+                    or _WAITING_CONFIRM_LINE_RE.search(s)
+                ):
+                    cleaned.append(s)
             if cleaned:
-                # 取最后几行可见内容，覆盖 "Do you want to proceed?" + numbered options 场景。
-                return " | ".join(cleaned[-8:])
+                for line in cleaned[-6:]:
+                    normalized = self._normalize_event_text(line, 120)
+                    if not normalized:
+                        continue
+                    if normalized not in parts:
+                        parts.append(normalized)
+            if parts:
+                return " | ".join(parts)
         except Exception:
             pass
+        if stable_message:
+            return stable_message
         return re.sub(r"\s+", " ", fallback)
+
+    def _build_semantic_waiting_fingerprint(
+        self, log_file, tool_name, fallback="", include_fallback=True
+    ):
+        log_file = str(log_file or "").strip()
+        tool_name = str(tool_name or "").strip().lower()
+        fallback = str(fallback or "").strip()
+        stable_fallback = self._normalize_event_text(fallback, 140)
+        parts = []
+        if (
+            include_fallback
+            and stable_fallback
+            and stable_fallback not in _GENERIC_WAITING_MESSAGES
+        ):
+            parts.append(stable_fallback)
+        try:
+            lines = tail_read(log_file)
+            waiting_lines = []
+            for line in lines[-20:]:
+                s = strip_ansi_text(line)
+                if is_system_output_line(s):
+                    continue
+                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+                if not s:
+                    continue
+                if is_display_noise_line(s, tool_name):
+                    continue
+                if (
+                    _WAITING_MENU_LINE_RE.search(s)
+                    or _WAITING_HINT_RE.search(s)
+                    or _WAITING_CONFIRM_LINE_RE.search(s)
+                ):
+                    waiting_lines.append(s)
+            for line in waiting_lines[-6:]:
+                normalized = self._normalize_event_text(line, 120)
+                if normalized and normalized not in parts:
+                    parts.append(normalized)
+        except Exception:
+            pass
+        if parts:
+            return " | ".join(parts)
+        if include_fallback:
+            return stable_fallback
+        return ""
+
+    def _derive_waiting_message(self, fingerprint, fallback=""):
+        parts = [self._normalize_event_text(p, 120) for p in str(fingerprint or "").split(" | ")]
+        parts = [p for p in parts if p]
+        fallback_text = self._normalize_event_text(fallback, 120)
+        for part in parts:
+            if _WAITING_HINT_RE.search(part) or _WAITING_CONFIRM_LINE_RE.search(part):
+                return part
+        for part in parts:
+            if not _WAITING_MENU_LINE_RE.search(part):
+                return part
+        if fallback_text:
+            return fallback_text
+        if parts:
+            return parts[0]
+        return fallback_text
+
+    def _has_new_effective_output(self, log_file, tool_name, cached_message):
+        log_file = str(log_file or "").strip()
+        tool_name = str(tool_name or "").strip().lower()
+        cached_message = self._normalize_event_text(cached_message, 120)
+        try:
+            lines = tail_read(log_file)
+            for line in reversed(lines[-20:]):
+                s = strip_ansi_text(line)
+                if is_system_output_line(s):
+                    continue
+                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+                if not s:
+                    continue
+                if is_display_noise_line(s, tool_name):
+                    continue
+                normalized = self._normalize_event_text(s, 120)
+                if not normalized:
+                    continue
+                if (
+                    _WAITING_MENU_LINE_RE.search(normalized)
+                    or _WAITING_HINT_RE.search(normalized)
+                    or _WAITING_CONFIRM_LINE_RE.search(normalized)
+                ):
+                    continue
+                if normalized in _GENERIC_RUNNING_MESSAGES:
+                    continue
+                if cached_message and normalized == cached_message:
+                    continue
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _apply_semantic_waiting_hold(self, log_file, tool_name, status, message):
+        log_file = str(log_file or "").strip()
+        tool_name = str(tool_name or "").strip().lower()
+        status = str(status or "").strip().upper()
+        message = str(message or "").strip()
+
+        if not log_file or tool_name not in _SEMANTIC_WAITING_TOOLS:
+            return status, message
+
+        if status == "WAITING":
+            fingerprint = self._build_semantic_waiting_fingerprint(
+                log_file, tool_name, message, include_fallback=True
+            )
+            self._semantic_waiting_cache[log_file] = {
+                "tool": tool_name,
+                "message": message or "等待确认输入",
+                "fingerprint": fingerprint,
+            }
+            return status, message
+
+        if status in {"IDLE", "DONE"}:
+            self._semantic_waiting_cache.pop(log_file, None)
+            return status, message
+
+        if status != "RUNNING":
+            return status, message
+
+        cached = self._semantic_waiting_cache.get(log_file)
+        if not cached:
+            return status, message
+
+        current_fp = self._build_semantic_waiting_fingerprint(
+            log_file, tool_name, message, include_fallback=False
+        )
+        current_msg = self._normalize_event_text(message, 120)
+        cached_msg = self._normalize_event_text(cached.get("message", ""), 120)
+
+        if current_fp:
+            derived_message = self._derive_waiting_message(
+                current_fp, str(cached.get("message", "") or message or "等待确认输入")
+            )
+            cached["fingerprint"] = current_fp
+            cached["message"] = derived_message or str(
+                cached.get("message", "") or message or "等待确认输入"
+            )
+            return "WAITING", str(cached.get("message", "") or message or "等待确认输入")
+
+        if current_msg in _GENERIC_RUNNING_MESSAGES or current_msg == cached_msg:
+            # 终端聚焦/重绘常会抬高日志 mtime，但并不代表用户已处理等待态；
+            # 只要没有新的有效输出，就继续保持等待态，直到出现真实运行语义。
+            if not self._has_new_effective_output(log_file, tool_name, cached.get("message", "")):
+                return "WAITING", str(cached.get("message", "") or message or "等待确认输入")
+
+        self._semantic_waiting_cache.pop(log_file, None)
+        return status, message
 
     def _normalize_event_text(self, text, limit=120):
         s = strip_ansi_text(str(text or ""))
@@ -1817,6 +2014,7 @@ class Api:
             self._task_states,
             self._last_signal_ts,
             self._last_waiting_fingerprint,
+            self._semantic_waiting_cache,
             self._last_event_key,
             self._last_event_priority,
             self._last_event_time,
@@ -1856,6 +2054,7 @@ class Api:
         try:
             self._clear_unread_for_task(log_file)
             self._last_waiting_fingerprint.pop(log_file, None)
+            self._semantic_waiting_cache.pop(log_file, None)
             self._task_states.pop(log_file, None)
             self._last_signal_ts.pop(log_file, None)
             self._last_event_key.pop(log_file, None)

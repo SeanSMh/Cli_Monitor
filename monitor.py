@@ -78,6 +78,22 @@ DISPLAY_NOISE_PATTERNS_COMMON = (
     r"^(?:\]\d{1,3};\?)+$",
 )
 
+AI_AUXILIARY_BUILD_NOISE_PATTERNS = (
+    # 外部构建工具（尤其是 JetBrains 终端内的 gradle）错误/摘要噪音，避免污染 AI 卡片。
+    r"^\s*> Task\b.*$",
+    r"^\s*FAILURE:\s+Build failed with an exception\.?\s*$",
+    r"^\s*BUILD FAILED\b.*$",
+    r"^\s*BUILD SUCCESSFUL\b.*$",
+    r"^\s*Execution failed for task\b.*$",
+    r"^\s*\* What went wrong:\s*$",
+    r"^\s*\* Try:\s*$",
+    r"^\s*\* Exception is:\s*$",
+    r"^\s*Deprecated Gradle features were used\b.*$",
+    r"^\s*Run with --(?:stacktrace|info|debug|scan)\b.*$",
+    r"^\s*\d+\s+actionable tasks?:\b.*$",
+    r"^\s*\S+\.(?:java|kt|kts|xml|gradle|groovy|cpp|c|cc|h|hpp):\d+(?::\d+)?:\s+(?:error|warning):\s+.+$",
+)
+
 DISPLAY_NOISE_PATTERNS_BY_TOOL = {
     "codex": (
         # Codex CLI 启动 banner / box drawing
@@ -89,20 +105,24 @@ DISPLAY_NOISE_PATTERNS_BY_TOOL = {
         # Token usage line noise (keep card subtitle concise)
         r"^\s*[\d,]{3,}\s+tokens?\b.*$",
         r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
-    ),
+    ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
     "claude": (
         r"^\s*[\d,]{3,}\s+tokens?\b.*$",
         r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
-    ),
+    ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
     "gemini": (
         r"^\s*[\d,]{3,}\s+tokens?\b.*$",
         r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
-    ),
+    ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
 }
 
 WAITING_MENU_LINE_RE = re.compile(r"^\s*(?:[❯›>•*\-]\s*)?\d+[.)]\s+\S+")
 WAITING_QUESTION_HINT_RE = re.compile(
-    r"(?:do you want to|would you like to|confirm|choose|select|apply|proceed|continue|save file to continue|press enter)",
+    r"(?:do you want to|would you like to|confirm\b|choose\b|select\b|save file to continue|press enter|apply changes\?)",
+    re.IGNORECASE,
+)
+WAITING_CONFIRM_LINE_RE = re.compile(
+    r"^\s*(?:[❯›>•*\-]\s*)?(?:proceed|continue)\s*(?:\?|\:|\((?:y/n|yes/no)\)|\[(?:y/n|yes/no)\])\s*$",
     re.IGNORECASE,
 )
 
@@ -559,12 +579,12 @@ def _detect_waiting_prompt_from_lines(lines, line_limit=60):
     menu_lines = [line for line in normalized if WAITING_MENU_LINE_RE.search(line)]
     if len(menu_lines) >= 2:
         for line in reversed(normalized):
-            if WAITING_QUESTION_HINT_RE.search(line):
+            if WAITING_QUESTION_HINT_RE.search(line) or WAITING_CONFIRM_LINE_RE.search(line):
                 return line[:line_limit]
         return menu_lines[0][:line_limit]
 
     for line in reversed(normalized):
-        if WAITING_QUESTION_HINT_RE.search(line):
+        if WAITING_QUESTION_HINT_RE.search(line) or WAITING_CONFIRM_LINE_RE.search(line):
             return line[:line_limit]
     return ""
 
@@ -770,10 +790,16 @@ def analyze_log(filepath):
 
     clean_detect_lines = [strip_ansi_text(l) for l in detect_tail_lines]
     visible_detect_lines = [l for l in clean_detect_lines if not is_system_output_line(l)]
+    if tool_name in {"claude", "codex", "gemini"}:
+        semantic_detect_lines = [
+            l for l in visible_detect_lines if not is_display_noise_line(l, tool_name)
+        ]
+    else:
+        semantic_detect_lines = visible_detect_lines
     clean_display_lines = [strip_ansi_text(l) for l in display_tail_lines]
     visible_display_lines = [l for l in clean_display_lines if not is_system_output_line(l)]
     display_lines = [l for l in visible_display_lines if not is_display_noise_line(l, tool_name)]
-    context = "".join(visible_detect_lines)
+    context = "".join(semantic_detect_lines)
     
     last_line = ""
     for l in reversed(display_lines):
@@ -792,7 +818,7 @@ def analyze_log(filepath):
 
     if tool_name == "codex":
         codex_result, unknown_events = _analyze_codex_structured_status(
-            visible_detect_lines, common_waiting, last_line
+            semantic_detect_lines, common_waiting, last_line
         )
         _record_codex_unknown_events(unknown_events)
         if codex_result is not None:
@@ -815,7 +841,7 @@ def analyze_log(filepath):
 
     # 编号菜单/确认问句的纯文本快速识别（仅对交互式 AI CLI 启用，避免误判构建日志）。
     if tool_name in {"claude", "codex", "gemini"}:
-        fast_waiting_prompt = _detect_waiting_prompt_from_lines(visible_detect_lines[-20:])
+        fast_waiting_prompt = _detect_waiting_prompt_from_lines(semantic_detect_lines[-20:])
         if fast_waiting_prompt:
             if is_claude:
                 _record_claude_parse_hit("text_fallback")
@@ -825,7 +851,7 @@ def analyze_log(filepath):
 
     for pattern in common_waiting:
         if re.search(pattern, context, re.IGNORECASE):
-            for line in reversed(visible_detect_lines):
+            for line in reversed(semantic_detect_lines):
                 stripped = line.strip()
                 stripped = re.sub(r'[\x00-\x1f\x7f]', '', stripped)
                 if re.search(pattern, stripped, re.IGNORECASE):
@@ -891,7 +917,15 @@ def analyze_log(filepath):
         if not busy_in_tail and idle_seconds > 10:
              broad_lines = lines[-30:] if len(lines) >= 30 else lines
              broad_context = "".join(
-                 [strip_ansi_text(l) for l in broad_lines if not is_system_output_line(l)]
+                 [
+                     strip_ansi_text(l)
+                     for l in broad_lines
+                     if not is_system_output_line(l)
+                     and not (
+                         tool_name in {"claude", "codex", "gemini"}
+                         and is_display_noise_line(l, tool_name)
+                     )
+                 ]
              )
              if any(re.search(p, broad_context, re.IGNORECASE) for p in busy_patterns):
                  if not is_claude:

@@ -32,6 +32,14 @@ class CodexEventParserTests(unittest.TestCase):
         self.assertEqual(status, "WAITING")
         self.assertIn("Pick one", msg)
 
+    def test_detects_waiting_from_single_line_confirm_prompt(self):
+        lines = [
+            '{"type":"turn.waiting_for_input","prompt":"Continue:","message":"Continue:"}\n'
+        ]
+        status, msg = parse_codex_structured_status(lines) or ("", "")
+        self.assertEqual(status, "WAITING")
+        self.assertEqual(msg, "Continue:")
+
     def test_detects_idle_from_completed_event(self):
         lines = ['{"event":{"type":"turn.completed"},"message":"done"}\n']
         status, msg = parse_codex_structured_status(lines) or ("", "")

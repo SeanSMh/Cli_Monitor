@@ -10,7 +10,11 @@ from typing import Any
 
 WAITING_MENU_RE = re.compile(r"^\s*(?:[❯›>•*\-]\s*)?\d+[.)]\s+\S+")
 WAITING_QUESTION_RE = re.compile(
-    r"(?:do you want to|would you like to|confirm|choose|select|apply|proceed|continue|save file to continue|press enter)",
+    r"(?:do you want to|would you like to|confirm\b|choose\b|select\b|save file to continue|press enter|apply changes\?)",
+    re.IGNORECASE,
+)
+WAITING_CONFIRM_LINE_RE = re.compile(
+    r"^\s*(?:[❯›>•*\-]\s*)?(?:proceed|continue)\s*(?:\?|\:|\((?:y/n|yes/no)\)|\[(?:y/n|yes/no)\])\s*$",
     re.IGNORECASE,
 )
 
@@ -154,9 +158,13 @@ def extract_waiting_text(
 
     if len([line for line in normalized if WAITING_MENU_RE.search(line)]) >= 2:
         for line in normalized:
-            if WAITING_QUESTION_RE.search(line):
+            if WAITING_QUESTION_RE.search(line) or WAITING_CONFIRM_LINE_RE.search(line):
                 return clip_text(line)
         return clip_text(normalized[0])
+
+    for line in normalized:
+        if WAITING_QUESTION_RE.search(line) or WAITING_CONFIRM_LINE_RE.search(line):
+            return clip_text(line)
 
     blob = "\n".join(normalized)
     for pattern in waiting_patterns:

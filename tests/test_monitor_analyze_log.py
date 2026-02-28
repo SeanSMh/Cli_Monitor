@@ -482,6 +482,42 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "RUNNING")
         self.assertEqual(msg, "server version mismatch detected")
 
+    def test_analyze_log_ignores_gradle_failure_boilerplate_in_claude_display(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(
+            log,
+            "claude",
+            [
+                "> Task :app:compileDebugJavaWithJavac FAILED\n",
+                "FAILURE: Build failed with an exception.\n",
+                "* What went wrong:\n",
+                "Execution failed for task ':app:compileDebugJavaWithJavac'.\n",
+                "BUILD FAILED in 12s\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_ignores_gradle_failure_boilerplate_in_codex_display(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                "> Task :app:compileDebugJavaWithJavac FAILED\n",
+                "FAILURE: Build failed with an exception.\n",
+                "* What went wrong:\n",
+                "Execution failed for task ':app:compileDebugJavaWithJavac'.\n",
+                "BUILD FAILED in 12s\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
     def test_analyze_log_uses_codex_structured_waiting_event(self):
         log = self.tmp_path / "logs" / "codex_1_2_3.log"
         _write_log(
