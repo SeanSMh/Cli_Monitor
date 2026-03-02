@@ -103,17 +103,17 @@ DISPLAY_NOISE_PATTERNS_BY_TOOL = {
         r"^[│\s]*You are in\s+/.+$",
         r"^[│\s]*Press .* to .*",
         # Token usage line noise (keep card subtitle concise)
-        r"^\s*[\d,]{3,}\s*tokens?\b.*$",
-        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
+        r"^\s*\d[\d,]*\s*tokens?\b.*$",
+        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*\d[\d,]*\b.*$",
     ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
     "claude": (
-        r"^\s*[\d,]{3,}\s*tokens?\b.*$",
-        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
-        r"^\s*\??\s*for\s*shortcuts.*[\d,]{3,}\s*tokens?\b.*$",
+        r"^\s*\d[\d,]*\s*tokens?\b.*$",
+        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*\d[\d,]*\b.*$",
+        r"^\s*\??\s*for\s*shortcuts.*\d[\d,]*\s*tokens?\b.*$",
     ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
     "gemini": (
-        r"^\s*[\d,]{3,}\s*tokens?\b.*$",
-        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
+        r"^\s*\d[\d,]*\s*tokens?\b.*$",
+        r"^\s*(?:total\s+)?tokens?\s*[:=]\s*\d[\d,]*\b.*$",
     ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
 }
 
@@ -709,6 +709,7 @@ def calculate_duration(start_time, end_time):
 
 # === 状态分析与速率跟踪 ===
 _file_size_history = defaultdict(list)
+_effective_output_stability = {}
 
 def track_file_rate(filepath):
     try:
@@ -748,6 +749,36 @@ def track_file_rate(filepath):
 
 def clear_rate_history(filepath):
     _file_size_history.pop(filepath, None)
+
+
+def track_effective_output_stability(filepath, lines):
+    now = time.time()
+    parts = []
+    for raw in lines or []:
+        s = strip_ansi_text(str(raw or ""))
+        s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+        if not s:
+            continue
+        parts.append(s)
+    signature = " | ".join(parts[-4:])
+    if not signature:
+        _effective_output_stability.pop(filepath, None)
+        return "", 0.0
+
+    cached = _effective_output_stability.get(filepath)
+    if not cached or cached.get("signature") != signature:
+        _effective_output_stability[filepath] = {
+            "signature": signature,
+            "stable_since": now,
+        }
+        return signature, 0.0
+
+    stable_since = float(cached.get("stable_since") or now)
+    return signature, max(0.0, now - stable_since)
+
+
+def clear_effective_output_stability(filepath):
+    _effective_output_stability.pop(filepath, None)
 
 
 def _get_tool_rules(tool_name):
@@ -832,6 +863,7 @@ def analyze_log(filepath):
     if is_done:
         duration = calculate_duration(start_time, end_time)
         clear_rate_history(filepath)
+        clear_effective_output_stability(filepath)
         return _return_status(tool_name, "DONE", "任务完成", exit_code, duration, 0)
 
     done_patterns = tool_rules.get("done_patterns", {})
@@ -930,10 +962,20 @@ def analyze_log(filepath):
         idle_patterns = [p for p in idle_patterns if "cost" not in str(p or "").lower()]
     busy_patterns = tool_rules.get("busy_patterns", []) + RULES_CONF.get("common", {}).get("busy", [])
     tool_idle_threshold = tool_rules.get("idle_threshold", IDLE_THRESHOLD_SECONDS)
+    tool_rate_idle_seconds = tool_rules.get("rate_idle_seconds", RATE_IDLE_SECONDS)
+    tool_weak_idle_seconds = tool_rules.get("weak_idle_seconds", 0)
     try:
         tool_idle_threshold = float(tool_idle_threshold)
     except Exception:
         tool_idle_threshold = float(IDLE_THRESHOLD_SECONDS)
+    try:
+        tool_rate_idle_seconds = float(tool_rate_idle_seconds)
+    except Exception:
+        tool_rate_idle_seconds = float(RATE_IDLE_SECONDS)
+    try:
+        tool_weak_idle_seconds = float(tool_weak_idle_seconds)
+    except Exception:
+        tool_weak_idle_seconds = 0.0
 
     busy_context = context
     if is_claude:
@@ -947,6 +989,16 @@ def analyze_log(filepath):
         return _return_status(
             tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
         )
+
+    if is_claude and not busy_in_tail and tool_weak_idle_seconds > 0:
+        effective_signature, stable_seconds = track_effective_output_stability(
+            filepath, semantic_detect_lines[-20:]
+        )
+        if effective_signature and stable_seconds >= tool_weak_idle_seconds:
+            _record_claude_parse_hit("text_fallback")
+            return _return_status(
+                tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
+            )
 
     last_idle_pos = -1
     for pattern in idle_patterns:
@@ -967,7 +1019,7 @@ def analyze_log(filepath):
             )
 
     was_fast, is_stalled, stall_secs = track_file_rate(filepath)
-    if was_fast and is_stalled and stall_secs >= RATE_IDLE_SECONDS:
+    if was_fast and is_stalled and stall_secs >= tool_rate_idle_seconds:
         if not is_claude:
             return _return_status(
                 tool_name, "IDLE", "AI 已完成回复", -1, "", 0, codex_source="text"

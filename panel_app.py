@@ -362,6 +362,7 @@ _GENERIC_WAITING_MESSAGES = {
     "Need confirmation",
 }
 _SEMANTIC_WAITING_TOOLS = {"claude", "codex"}
+_SEMANTIC_IDLE_TOOLS = {"codex"}
 _GENERIC_RUNNING_MESSAGES = {
     "",
     "运行中...",
@@ -1538,6 +1539,8 @@ class Api:
         self._last_focus_result = {"success": False, "provider": "", "reason": ""}
         self._last_waiting_fingerprint = {}  # Key: log_file -> normalized waiting context
         self._semantic_waiting_cache = {}  # Key: log_file -> {tool,message,fingerprint}
+        self._semantic_idle_cache = {}  # Key: log_file -> {tool,message,fingerprint}
+        self._forced_done_cache = {}  # Key: log_file -> {ended_at,duration,exit_code}
 
     def get_settings(self):
         settings = get_app_settings()
@@ -1575,6 +1578,9 @@ class Api:
 
         tool_name, status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
 
+        if status == "DONE":
+            self._forced_done_cache.pop(log_file, None)
+
         if status != "DONE":
             try:
                 basename = os.path.basename(log_file)
@@ -1584,18 +1590,31 @@ class Api:
                     try:
                         os.kill(pid, 0)
                     except OSError:
-                        ended_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                        cached_done = self._forced_done_cache.get(log_file) or {}
+                        ended_at = str(cached_done.get("ended_at") or "").strip()
+                        if not ended_at:
+                            ended_at = time.strftime('%Y-%m-%d %H:%M:%S')
                         _append_monitor_end_if_missing(log_file, 137, ended_at)
                         status = "DONE"
                         exit_code = 137
                         msg = "[进程已终止]"
                         _, start_time = parse_start_info(log_file)
-                        duration = calculate_duration(start_time, ended_at)
+                        duration = str(cached_done.get("duration") or "").strip()
+                        if not duration:
+                            duration = calculate_duration(start_time, ended_at)
+                        self._forced_done_cache[log_file] = {
+                            "ended_at": ended_at,
+                            "duration": duration,
+                            "exit_code": exit_code,
+                        }
                         clear_rate_history(log_file)
             except Exception:
                 pass
 
         status, msg = self._apply_semantic_waiting_hold(
+            log_file, tool_name, status, msg
+        )
+        status, msg = self._apply_semantic_idle_hold(
             log_file, tool_name, status, msg
         )
 
@@ -1803,6 +1822,32 @@ class Api:
             return parts[0]
         return fallback_text
 
+    def _build_semantic_idle_fingerprint(self, log_file, tool_name, fallback=""):
+        log_file = str(log_file or "").strip()
+        tool_name = str(tool_name or "").strip().lower()
+        fallback = self._normalize_event_text(fallback, 120)
+        parts = []
+        try:
+            lines = tail_read(log_file)
+            for line in lines[-20:]:
+                s = strip_ansi_text(line)
+                if is_system_output_line(s):
+                    continue
+                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+                if not s:
+                    continue
+                if is_display_noise_line(s, tool_name):
+                    continue
+                normalized = self._normalize_event_text(s, 120)
+                if not normalized:
+                    continue
+                parts.append(normalized)
+        except Exception:
+            pass
+        if parts:
+            return " | ".join(parts[-6:])
+        return fallback
+
     def _has_new_effective_output(self, log_file, tool_name, cached_message):
         log_file = str(log_file or "").strip()
         tool_name = str(tool_name or "").strip().lower()
@@ -1890,6 +1935,50 @@ class Api:
                 return "WAITING", str(cached.get("message", "") or message or "等待确认输入")
 
         self._semantic_waiting_cache.pop(log_file, None)
+        return status, message
+
+    def _apply_semantic_idle_hold(self, log_file, tool_name, status, message):
+        log_file = str(log_file or "").strip()
+        tool_name = str(tool_name or "").strip().lower()
+        status = str(status or "").strip().upper()
+        message = str(message or "").strip()
+
+        if not log_file or tool_name not in _SEMANTIC_IDLE_TOOLS:
+            return status, message
+
+        if status == "IDLE":
+            self._semantic_idle_cache[log_file] = {
+                "tool": tool_name,
+                "message": message or "等待输入",
+                "fingerprint": self._build_semantic_idle_fingerprint(
+                    log_file, tool_name, message or "等待输入"
+                ),
+            }
+            return status, message
+
+        if status in {"WAITING", "DONE"}:
+            self._semantic_idle_cache.pop(log_file, None)
+            return status, message
+
+        if status != "RUNNING":
+            return status, message
+
+        cached = self._semantic_idle_cache.get(log_file)
+        if not cached:
+            return status, message
+
+        current_fp = self._build_semantic_idle_fingerprint(log_file, tool_name, message)
+        cached_fp = self._normalize_event_text(cached.get("fingerprint", ""), 200)
+        if current_fp and cached_fp and self._normalize_event_text(current_fp, 200) == cached_fp:
+            return "IDLE", str(cached.get("message", "") or message or "等待输入")
+
+        current_msg = self._normalize_event_text(message, 120)
+        cached_msg = self._normalize_event_text(cached.get("message", ""), 120)
+        if current_msg in _GENERIC_RUNNING_MESSAGES or current_msg == cached_msg:
+            if not self._has_new_effective_output(log_file, tool_name, cached.get("message", "")):
+                return "IDLE", str(cached.get("message", "") or message or "等待输入")
+
+        self._semantic_idle_cache.pop(log_file, None)
         return status, message
 
     def _normalize_event_text(self, text, limit=120):
@@ -2029,6 +2118,8 @@ class Api:
             self._last_signal_ts,
             self._last_waiting_fingerprint,
             self._semantic_waiting_cache,
+            self._semantic_idle_cache,
+            self._forced_done_cache,
             self._last_event_key,
             self._last_event_priority,
             self._last_event_time,

@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
                 "busy_patterns": [r"Thinking", r"esc to interrupt"],
                 "idle_patterns": [r"Context left", r"Cost:"],
                 "idle_threshold": 10,
+                "weak_idle_seconds": 3,
                 "signal_file": "_claude_idle_signal"
             },
             {
@@ -66,6 +67,7 @@ DEFAULT_CONFIG = {
                 "busy_patterns": [r"Working\("],
                 "idle_patterns": [r"\? for shortcuts", r"context left"],
                 "idle_threshold": 12,
+                "rate_idle_seconds": 2,
             },
             {
                 "name": "gemini",

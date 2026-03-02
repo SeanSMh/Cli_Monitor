@@ -268,6 +268,14 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "RUNNING")
         self.assertEqual(msg, "运行中...")
 
+    def test_analyze_log_treats_zero_token_usage_line_as_noise(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["0tokens\n"])
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
     def test_analyze_log_treats_claude_shortcut_token_residue_as_noise(self):
         log = self.tmp_path / "logs" / "claude_1_2_3.log"
         _write_log(log, "claude", ["?forshortcuts36518tokens\n"])
@@ -286,6 +294,26 @@ class AnalyzeLogTests(unittest.TestCase):
         _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
         self.assertEqual(status, "IDLE")
         self.assertEqual(msg, "等待输入")
+
+    def test_analyze_log_claude_uses_weaker_stable_idle_window_without_hook(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["Final answer line\n"])
+
+        with mock.patch.object(
+            self.monitor,
+            "track_file_rate",
+            return_value=(False, False, 0),
+        ), mock.patch.object(self.monitor.os.path, "getmtime", return_value=100.0), mock.patch.object(
+            self.monitor.time,
+            "time",
+            side_effect=[100.0, 100.0, 103.2, 103.2],
+        ):
+            _, first_status, _, _, _, _ = self.monitor.analyze_log(str(log))
+            _, second_status, second_msg, _, _, _ = self.monitor.analyze_log(str(log))
+
+        self.assertEqual(first_status, "RUNNING")
+        self.assertEqual(second_status, "IDLE")
+        self.assertEqual(second_msg, "等待输入")
 
     def test_analyze_log_claude_notification_idle_compatibility(self):
         log = self.tmp_path / "logs" / "claude_1_2_3.log"
@@ -344,6 +372,20 @@ class AnalyzeLogTests(unittest.TestCase):
             self.monitor,
             "track_file_rate",
             return_value=(True, True, self.monitor.RATE_IDLE_SECONDS),
+        ):
+            _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+
+        self.assertEqual(status, "IDLE")
+        self.assertEqual(msg, "AI 已完成回复")
+
+    def test_analyze_log_codex_uses_shorter_rate_idle_window(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(log, "codex", ["running...\n"])
+
+        with mock.patch.object(
+            self.monitor,
+            "track_file_rate",
+            return_value=(True, True, 2),
         ):
             _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
 

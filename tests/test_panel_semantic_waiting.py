@@ -118,6 +118,55 @@ class PanelSemanticWaitingTests(unittest.TestCase):
         self.assertEqual(message, "运行中...")
         self.assertNotIn(log_file, api._semantic_waiting_cache)
 
+    def test_semantic_idle_holds_codex_on_unchanged_effective_tail(self):
+        api = panel_app.Api()
+        log_file = "/tmp/ai_monitor_logs/codex_test_semantic_idle.log"
+        api._semantic_idle_cache[log_file] = {
+            "tool": "codex",
+            "message": "等待输入",
+            "fingerprint": "Final answer line | ? for shortcuts",
+        }
+
+        with mock.patch.object(
+            panel_app,
+            "tail_read",
+            return_value=[
+                "Final answer line\n",
+                "? for shortcuts\n",
+            ],
+        ):
+            status, message = api._apply_semantic_idle_hold(
+                log_file, "codex", "RUNNING", "Final answer line"
+            )
+
+        self.assertEqual(status, "IDLE")
+        self.assertEqual(message, "等待输入")
+
+    def test_semantic_idle_releases_codex_when_new_output_arrives(self):
+        api = panel_app.Api()
+        log_file = "/tmp/ai_monitor_logs/codex_test_semantic_idle_release.log"
+        api._semantic_idle_cache[log_file] = {
+            "tool": "codex",
+            "message": "等待输入",
+            "fingerprint": "Final answer line | ? for shortcuts",
+        }
+
+        with mock.patch.object(
+            panel_app,
+            "tail_read",
+            return_value=[
+                "Final answer line\n",
+                "Thinking about next step\n",
+            ],
+        ):
+            status, message = api._apply_semantic_idle_hold(
+                log_file, "codex", "RUNNING", "Thinking about next step"
+            )
+
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(message, "Thinking about next step")
+        self.assertNotIn(log_file, api._semantic_idle_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

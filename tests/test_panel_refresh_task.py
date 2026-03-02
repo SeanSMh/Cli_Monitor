@@ -55,6 +55,29 @@ class PanelRefreshTaskTests(unittest.TestCase):
         self.assertEqual(api._unread_notification_count, 1)
         self.assertNotIn(str(log), api._unread_by_task)
 
+    def test_build_task_for_log_keeps_closed_duration_stable_when_end_marker_write_fails(self):
+        log = self.log_dir / "codex_1710000000_99999_dead.log"
+        _write_log(log, "codex", ["running...\n"])
+
+        api = panel_app.Api()
+
+        with mock.patch.object(
+            panel_app,
+            "analyze_log",
+            return_value=("codex", "RUNNING", "运行中...", -1, "", 0),
+        ), mock.patch.object(panel_app.os, "kill", side_effect=OSError()), mock.patch.object(
+            panel_app, "_append_monitor_end_if_missing", return_value=False
+        ), mock.patch.object(panel_app.time, "strftime") as mock_strftime:
+            mock_strftime.return_value = "2026-03-02 10:00:05"
+            first = api._build_task_for_log(str(log), "zh")
+            second = api._build_task_for_log(str(log), "zh")
+
+        self.assertEqual(first["status"], "DONE")
+        self.assertEqual(second["status"], "DONE")
+        self.assertEqual(first["exit_code"], 137)
+        self.assertEqual(first["duration"], "5s")
+        self.assertEqual(second["duration"], first["duration"])
+
 
 if __name__ == "__main__":
     unittest.main()
