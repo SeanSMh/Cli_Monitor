@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -200,6 +201,57 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "RUNNING")
         self.assertIn("Cost:", msg)
 
+    def test_analyze_log_claude_cost_summary_goes_idle(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(
+            log,
+            "claude",
+            [
+                "❯ /cost\n",
+                "⎿  Total cost:            $0.3723\n",
+                "Total duration (API):  46s\n",
+                "Total duration (wall): 1h 24m 24s\n",
+                "Total code changes:    0 lines added, 0 lines removed\n",
+                "Usage by model:\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "IDLE")
+        self.assertEqual(msg, "等待输入")
+
+    def test_analyze_log_claude_plain_colon_notes_do_not_trigger_summary_idle(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(
+            log,
+            "claude",
+            [
+                "Note: this is just a plain explanation\n",
+                "Next step: update config and retry\n",
+                "Reason: network timeout\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertIn("Reason:", msg)
+
+    def test_analyze_log_claude_cost_note_block_does_not_trigger_summary_idle(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(
+            log,
+            "claude",
+            [
+                "Cost: this adds complexity\n",
+                "Reason: network timeout\n",
+                "Next step: retry later\n",
+            ],
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertIn("Next step:", msg)
+
     def test_analyze_log_treats_token_usage_line_as_noise(self):
         log = self.tmp_path / "logs" / "claude_1_2_3.log"
         _write_log(log, "claude", ["94126 tokens\n"])
@@ -207,6 +259,33 @@ class AnalyzeLogTests(unittest.TestCase):
         _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
         self.assertEqual(status, "RUNNING")
         self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_treats_compact_token_usage_line_as_noise(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["36518tokens\n"])
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_treats_claude_shortcut_token_residue_as_noise(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        _write_log(log, "claude", ["?forshortcuts36518tokens\n"])
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "运行中...")
+
+    def test_analyze_log_claude_stale_thinking_does_not_block_idle_forever(self):
+        log = self.tmp_path / "logs" / "claude_1_2_3.log"
+        lines = ["Thinking...\n"] + [f"line {i}\n" for i in range(1, 7)]
+        _write_log(log, "claude", lines)
+        old_ts = time.time() - 40
+        os.utime(log, (old_ts, old_ts))
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "IDLE")
+        self.assertEqual(msg, "等待输入")
 
     def test_analyze_log_claude_notification_idle_compatibility(self):
         log = self.tmp_path / "logs" / "claude_1_2_3.log"

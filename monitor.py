@@ -103,15 +103,16 @@ DISPLAY_NOISE_PATTERNS_BY_TOOL = {
         r"^[│\s]*You are in\s+/.+$",
         r"^[│\s]*Press .* to .*",
         # Token usage line noise (keep card subtitle concise)
-        r"^\s*[\d,]{3,}\s+tokens?\b.*$",
+        r"^\s*[\d,]{3,}\s*tokens?\b.*$",
         r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
     ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
     "claude": (
-        r"^\s*[\d,]{3,}\s+tokens?\b.*$",
+        r"^\s*[\d,]{3,}\s*tokens?\b.*$",
         r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
+        r"^\s*\??\s*for\s*shortcuts.*[\d,]{3,}\s*tokens?\b.*$",
     ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
     "gemini": (
-        r"^\s*[\d,]{3,}\s+tokens?\b.*$",
+        r"^\s*[\d,]{3,}\s*tokens?\b.*$",
         r"^\s*(?:total\s+)?tokens?\s*[:=]\s*[\d,]{3,}\b.*$",
     ) + AI_AUXILIARY_BUILD_NOISE_PATTERNS,
 }
@@ -589,6 +590,57 @@ def _detect_waiting_prompt_from_lines(lines, line_limit=60):
     return ""
 
 
+_SUMMARY_VALUE_LINE_RE = re.compile(
+    r"^[a-z0-9][a-z0-9 /()_.+\-]{0,40}:\s+\S",
+    re.IGNORECASE,
+)
+_SUMMARY_SECTION_LINE_RE = re.compile(
+    r"^[a-z0-9][a-z0-9 /()_.+\-]{0,40}:\s*$",
+    re.IGNORECASE,
+)
+_SUMMARY_STRONG_LABEL_PREFIXES = (
+    "total cost",
+    "total duration",
+    "total code changes",
+    "usage by model",
+)
+
+
+def _detect_summary_completion(lines, tool_name):
+    tool_key = str(tool_name or "").strip().lower()
+    if tool_key != "claude":
+        return False
+
+    normalized = []
+    for raw in lines or []:
+        s = strip_ansi_text(str(raw or ""))
+        s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+        if not s:
+            continue
+        s = re.sub(r"^[\s⎿│╰╯╭╮└┘]+", "", s).strip()
+        if not s or is_system_output_line(s) or is_display_noise_line(s, tool_key):
+            continue
+        normalized.append(s)
+    if not normalized:
+        return False
+
+    summary_hits = 0
+    strong_hits = 0
+    for line in normalized[-10:]:
+        if not (
+            _SUMMARY_VALUE_LINE_RE.match(line)
+            or _SUMMARY_SECTION_LINE_RE.match(line)
+        ):
+            continue
+        summary_hits += 1
+        label = line.split(":", 1)[0].strip()
+        label_key = label.lower()
+        if any(label_key.startswith(prefix) for prefix in _SUMMARY_STRONG_LABEL_PREFIXES):
+            strong_hits += 1
+
+    return summary_hits >= 3 and strong_hits >= 1
+
+
 def strip_ansi_text(s):
     s = re.sub(r'\033\[[0-9;?]*[A-Za-z]', '', s)
     # OSC 序列可用 BEL 或 ST(ESC \\) 结束；JetBrains/JediTerm 常见颜色查询会走这里。
@@ -883,6 +935,19 @@ def analyze_log(filepath):
     except Exception:
         tool_idle_threshold = float(IDLE_THRESHOLD_SECONDS)
 
+    busy_context = context
+    if is_claude:
+        busy_context = "".join(semantic_detect_lines[-5:])
+    busy_in_tail = any(re.search(p, busy_context, re.IGNORECASE) for p in busy_patterns)
+
+    if is_claude and not busy_in_tail and _detect_summary_completion(
+        visible_detect_lines, tool_name
+    ):
+        _record_claude_parse_hit("text_fallback")
+        return _return_status(
+            tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text"
+        )
+
     last_idle_pos = -1
     for pattern in idle_patterns:
         for m in re.finditer(pattern, context, re.IGNORECASE):
@@ -911,8 +976,6 @@ def analyze_log(filepath):
     try:
         mtime = os.path.getmtime(filepath)
         idle_seconds = time.time() - mtime
-        
-        busy_in_tail = any(re.search(p, context, re.IGNORECASE) for p in busy_patterns)
 
         if not busy_in_tail and idle_seconds > 10:
              broad_lines = lines[-30:] if len(lines) >= 30 else lines

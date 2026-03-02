@@ -1112,7 +1112,7 @@ if HAS_APPKIT:
                 return
             if _window is None:
                 return
-            if _window_visible:
+            if _is_panel_visible_and_frontmost():
                 _window.hide()
                 _window_visible = False
             else:
@@ -1565,6 +1565,71 @@ class Api:
             "claude_capabilities_checked_at": checked_at,
         }
 
+    def _build_task_for_log(self, log_file, lang):
+        log_file = str(log_file or "").strip()
+        if not log_file or not os.path.exists(log_file):
+            return None
+
+        meta = parse_session_meta(log_file)
+        terminal_label = _get_terminal_label(meta)
+
+        tool_name, status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
+
+        if status != "DONE":
+            try:
+                basename = os.path.basename(log_file)
+                parts = basename.rsplit('_', 3)  # [tool, timestamp, pid, random.log]
+                if len(parts) >= 3:
+                    pid = int(parts[2])
+                    try:
+                        os.kill(pid, 0)
+                    except OSError:
+                        ended_at = time.strftime('%Y-%m-%d %H:%M:%S')
+                        _append_monitor_end_if_missing(log_file, 137, ended_at)
+                        status = "DONE"
+                        exit_code = 137
+                        msg = "[进程已终止]"
+                        _, start_time = parse_start_info(log_file)
+                        duration = calculate_duration(start_time, ended_at)
+                        clear_rate_history(log_file)
+            except Exception:
+                pass
+
+        status, msg = self._apply_semantic_waiting_hold(
+            log_file, tool_name, status, msg
+        )
+
+        msg = re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", msg)
+        msg = re.sub(r"[\x00-\x1f\x7f]", "", msg)
+        if len(msg) > 40:
+            msg = msg[:37] + "..."
+        subtitle = _build_card_subtitle(
+            tool_name=tool_name,
+            status=status,
+            msg=msg,
+            exit_code=exit_code,
+            duration=duration,
+            signal_ts=signal_ts,
+            terminal_label=terminal_label,
+            lang=lang,
+        )
+        display_badge = _card_badge_label(status, exit_code, lang)
+
+        return {
+            "task_key": log_file,
+            "tool": tool_name,
+            "status": status,
+            "message": msg,
+            "subtitle": subtitle,
+            "display_badge": display_badge,
+            "terminal_label": terminal_label,
+            "exit_code": exit_code,
+            "duration": duration,
+            "log_file": log_file,
+            "signal_ts": signal_ts,
+            "can_refresh": status != "DONE",
+        }
+
     def get_tasks(self):
         if not os.path.exists(LOG_DIR):
             return []
@@ -1576,91 +1641,40 @@ class Api:
         lang = get_current_language()
 
         for log_file in log_files[:MAX_TASKS]:
-            meta = parse_session_meta(log_file)
-            terminal_label = _get_terminal_label(meta)
-
-            # 接收 6 个返回值 (v2.0 New Signature)
-            # tool_name, status, msg, exit_code, duration, signal_ts
-            tool_name, status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
-            
-            # v2.0: parse_start_info 已被集成到 analyze_log 内部, 无需重复解析
-            # tool_name, start_time = parse_start_info(log_file) 
-            # 注意: calculate_duration 需要 start_time，但现在 analyze_log 内部已计算好 duration
-            # 如果是异常终止(kill)，我们需要 start_time 来重新计算 duration 吗？
-            # monitor.py 的 analyze_log 已经不再返回 start_time 了。
-            # 这是一个潜在问题。如果进程被 kill，status 会被这里覆盖为 DONE，但 duration 需要重算。
-            # 方案：monitor.py 的 analyze_log 已经处理了正常流程。
-            # 对于 kill 流程，monitor.py 无法感知。
-            # 为了保持逻辑简单，我们暂时 accept 如果 kill 掉，duration 可能不准或者为空。
-            # 或者，我们可以让 analyze_log 总是返回 start_time? 
-            # 不，为了性能，我们接受这个小瑕疵，或者再次 parse_start_info 仅在 kill 时?
-            # 让我们保留 parse_start_info 调用仅用于 kill 场景的 calculate_duration?
-            # 实际上，monitor.py 的 parse_start_info 也是读文件头。
-            
-            # 实时进程检测: 如果状态不是 DONE, 检查进程是否存活
-            if status != "DONE":
-                try:
-                    basename = os.path.basename(log_file)
-                    parts = basename.rsplit('_', 3) # [tool, timestamp, pid, random.log]
-                    if len(parts) >= 3:
-                        pid = int(parts[2])
-                        try:
-                            # 只有当 PID 存在时才不做任何事
-                            os.kill(pid, 0)
-                        except OSError:
-                            # 进程不存在 -> 强制标记为异常结束
-                            ended_at = time.strftime('%Y-%m-%d %H:%M:%S')
-                            _append_monitor_end_if_missing(log_file, 137, ended_at)
-                            status = "DONE"
-                            exit_code = 137 # SIGKILL
-                            msg = "[进程已终止]"
-                            # 重新读取 start_time 以计算 duration
-                            _, start_time = parse_start_info(log_file)
-                            duration = calculate_duration(start_time, ended_at)
-                            # 顺便清理一下速率历史
-                            clear_rate_history(log_file)
-                except Exception:
-                    pass
-
-            status, msg = self._apply_semantic_waiting_hold(
-                log_file, tool_name, status, msg
-            )
-
-            msg = re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", msg)
-            msg = re.sub(r"[\x00-\x1f\x7f]", "", msg)
-            if len(msg) > 40:
-                msg = msg[:37] + "..."
-            subtitle = _build_card_subtitle(
-                tool_name=tool_name,
-                status=status,
-                msg=msg,
-                exit_code=exit_code,
-                duration=duration,
-                signal_ts=signal_ts,
-                terminal_label=terminal_label,
-                lang=lang,
-            )
-            display_badge = _card_badge_label(status, exit_code, lang)
-
-            tasks.append(
-                {
-                    "tool": tool_name,
-                    "status": status,
-                    "message": msg,
-                    "subtitle": subtitle,
-                    "display_badge": display_badge,
-                    "terminal_label": terminal_label,
-                    "exit_code": exit_code,
-                    "duration": duration,
-                    "log_file": log_file,
-                    "signal_ts": signal_ts, # Pass signal_ts to frontend logic
-                }
-            )
+            task = self._build_task_for_log(log_file, lang)
+            if task:
+                tasks.append(task)
 
         self._check_notifications(tasks)
         update_status_icon(self._unread_notification_count)
 
         return tasks
+
+    def refresh_task(self, task_key):
+        log_file = str(task_key or "").strip()
+        if not log_file or not log_file.startswith(LOG_DIR):
+            return {"ok": False, "reason": "invalid_task"}
+        if not os.path.exists(log_file):
+            return {"ok": False, "reason": "not_found"}
+
+        # 手动刷新视为用户已查看该任务；仅重算当前卡片，不触发通知，不改变聚焦。
+        self._clear_unread_for_task(log_file)
+        self._semantic_waiting_cache.pop(log_file, None)
+
+        task = self._build_task_for_log(log_file, get_current_language())
+        if not task:
+            return {"ok": False, "reason": "not_found"}
+
+        self._task_states[log_file] = task["status"]
+        if task["status"] == "WAITING":
+            self._last_waiting_fingerprint[log_file] = self._build_waiting_fingerprint(task)
+        else:
+            self._last_waiting_fingerprint.pop(log_file, None)
+        signal_ts = int(task.get("signal_ts", 0) or 0)
+        if signal_ts > 0:
+            self._last_signal_ts[log_file] = signal_ts
+
+        return {"ok": True, "changed": True, "task": task}
 
     def clear_unread_notifications(self):
         self._unread_notification_count = 0

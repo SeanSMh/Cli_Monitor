@@ -593,7 +593,8 @@
             transform: scale(0.95);
         }
 
-        .btn-icon.spinning .refresh-icon {
+        .btn-icon.spinning .refresh-icon,
+        .btn-card-refresh.spinning .refresh-icon {
             animation: refresh-spin 0.55s linear;
         }
 
@@ -1106,7 +1107,7 @@
         .card-right {
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 6px;
             flex-shrink: 0;
         }
 
@@ -1144,20 +1145,73 @@
             background: var(--rose-bg);
         }
 
-        .btn-delete {
-            width: 20px;
-            height: 20px;
+        .card-action-btn {
+            width: 22px;
+            height: 22px;
             border-radius: 5px;
             border: none;
             background: transparent;
             color: var(--text-tertiary);
-            font-size: 14px;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
             opacity: 0.4;
             transition: all 0.2s;
+            flex-shrink: 0;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .btn-card-refresh {
+            font-size: 12px;
+            opacity: 0.45;
+        }
+
+        .card-action-icon {
+            width: 12px;
+            height: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+
+        .btn-card-refresh .refresh-icon {
+            font-size: 12px;
+            transform-origin: 50% 50%;
+        }
+
+        .task-card:hover .btn-card-refresh {
+            opacity: 0.8;
+        }
+
+        .btn-card-refresh:hover:not(:disabled) {
+            background: var(--blue-bg);
+            color: var(--blue);
+            opacity: 1;
+        }
+
+        .btn-card-refresh.spinning {
+            background: var(--blue-bg);
+            color: var(--blue);
+            opacity: 1;
+        }
+
+        .btn-card-refresh:disabled {
+            cursor: default;
+            opacity: 0.28;
+        }
+
+        .btn-delete {
+            font-size: 12px;
+        }
+
+        .btn-delete .delete-icon {
+            font-size: 13px;
+            font-weight: 500;
+            transform: translateY(-0.5px);
         }
 
         .task-card:hover .btn-delete {
@@ -1360,9 +1414,12 @@
     <script>
         const LAUNCH_SPLASH_MIN_MS = 360;
         const LAUNCH_SPLASH_FALLBACK_MS = 3000;
+        const CARD_REFRESH_SPIN_MS = 600;
         const launchSplashStartedAt = Date.now();
         let launchSplashClosed = false;
         let launchSplashClosingScheduled = false;
+        let latestTasks = [];
+        const refreshingTaskKeys = new Set();
         let claudeCapabilities = {
             claude_cli: 'unsupported',
             remote_control: 'unsupported',
@@ -1390,6 +1447,7 @@
                 ui_launch_subtitle: '启动中 · 初始化任务面板',
                 ui_btn_theme: '切换主题',
                 ui_btn_refresh: '刷新',
+                ui_btn_refresh_task: '刷新任务状态',
                 ui_btn_settings: '设置',
                 ui_btn_clear_done: '清除已完成',
                 ui_btn_quit: '退出',
@@ -1426,6 +1484,7 @@
                 ui_launch_subtitle: 'Starting · Initializing task panel',
                 ui_btn_theme: 'Toggle theme',
                 ui_btn_refresh: 'Refresh',
+                ui_btn_refresh_task: 'Refresh task',
                 ui_btn_settings: 'Settings',
                 ui_btn_clear_done: 'Clear completed',
                 ui_btn_quit: 'Quit',
@@ -1678,6 +1737,7 @@
         function renderTasks(tasks) {
             const grid = document.getElementById('taskGrid');
             const sub = document.getElementById('subtitle');
+            latestTasks = Array.isArray(tasks) ? tasks.slice() : [];
 
             if (!tasks || tasks.length === 0) {
                 sub.dataset.state = 'idle';
@@ -1696,9 +1756,12 @@
                 const info = getInfoText(t);
                 const source = getCardSourceText(t);
                 const safeLogFile = t.log_file.replace(/'/g, "\\'");
+                const taskKey = String((t && (t.task_key || t.log_file)) || '');
+                const safeTaskKey = taskKey.replace(/'/g, "\\'");
                 const safeToolName = escapeHtml(t.tool);
                 const safeInfo = escapeHtml(info);
                 const safeSource = escapeHtml(source);
+                const showRefresh = !!t.can_refresh;
                 return `
         <div class="task-card ${cls}" style="--stagger-index:${i};" data-testid="task-card" data-log-file="${safeLogFile}" onclick="openTask('${safeLogFile}')">
           <div class="status-dot ${cls}"></div>
@@ -1711,8 +1774,10 @@
           </div>
           <div class="card-right">
             <span class="card-badge ${cls}">${getBadgeText(t)}</span>
-            <button class="btn-delete" data-testid="delete-task-btn" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
-                    title="${tr('ui_btn_delete_task')}">×</button>
+            ${showRefresh ? `<button class="card-action-btn btn-card-refresh" data-testid="refresh-task-btn" data-task-key="${escapeHtml(taskKey)}" onclick="event.stopPropagation(); refreshTask('${safeTaskKey}', this)"
+                    title="${tr('ui_btn_refresh_task')}"><span class="card-action-icon refresh-icon">↻</span></button>` : ''}
+            <button class="card-action-btn btn-delete" data-testid="delete-task-btn" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
+                    title="${tr('ui_btn_delete_task')}"><span class="card-action-icon delete-icon">×</span></button>
           </div>
         </div>`;
             }).join('');
@@ -1780,6 +1845,18 @@
                 renderTasks(tasks);
                 dismissLaunchSplash();
             } catch (e) { console.error('刷新失败:', e); }
+        }
+
+        function upsertTask(task) {
+            if (!task || !task.log_file) return;
+            const taskKey = String((task && (task.task_key || task.log_file)) || '');
+            const idx = latestTasks.findIndex(t => String((t && (t.task_key || t.log_file)) || '') === taskKey);
+            if (idx >= 0) {
+                latestTasks[idx] = task;
+            } else {
+                latestTasks.unshift(task);
+            }
+            renderTasks(latestTasks);
         }
 
         function openSettings() {
@@ -1862,7 +1939,7 @@
                 btn.classList.remove('spinning');
                 void btn.offsetWidth;
                 btn.classList.add('spinning');
-                setTimeout(() => btn.classList.remove('spinning'), 600);
+                setTimeout(() => btn.classList.remove('spinning'), CARD_REFRESH_SPIN_MS);
             }
             refresh();
         }
@@ -1872,6 +1949,48 @@
                 await pywebview.api.delete_task(logFile);
                 refresh();
             } catch (e) { }
+        }
+
+        async function refreshTask(taskKey, btn) {
+            const key = String(taskKey || '').trim();
+            if (!key || refreshingTaskKeys.has(key)) return;
+            refreshingTaskKeys.add(key);
+            const button = btn && typeof btn === 'object' ? btn : null;
+            const startedAt = Date.now();
+            if (button) {
+                button.disabled = true;
+                button.classList.remove('spinning');
+                void button.offsetWidth;
+                button.classList.add('spinning');
+            }
+            let pendingTask = null;
+            let shouldRemove = false;
+            try {
+                const res = await pywebview.api.refresh_task(key);
+                if (res && res.ok && res.task) {
+                    pendingTask = res.task;
+                } else if (res && res.reason === 'not_found') {
+                    shouldRemove = true;
+                }
+            } catch (e) {
+                console.error('刷新任务失败:', e);
+            } finally {
+                const remain = Math.max(0, CARD_REFRESH_SPIN_MS - (Date.now() - startedAt));
+                if (remain > 0) {
+                    await new Promise(resolve => setTimeout(resolve, remain));
+                }
+                if (pendingTask) {
+                    upsertTask(pendingTask);
+                } else if (shouldRemove) {
+                    latestTasks = latestTasks.filter(t => String((t && (t.task_key || t.log_file)) || '') !== key);
+                    renderTasks(latestTasks);
+                }
+                refreshingTaskKeys.delete(key);
+                if (button && button.isConnected) {
+                    button.disabled = false;
+                    button.classList.remove('spinning');
+                }
+            }
         }
 
         async function openTask(logFile) {
