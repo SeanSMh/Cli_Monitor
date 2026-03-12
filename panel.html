@@ -1419,6 +1419,8 @@
         let launchSplashClosed = false;
         let launchSplashClosingScheduled = false;
         let latestTasks = [];
+        let lastRenderedTaskKeys = [];
+        let renderedTaskSignatures = new Map();
         const refreshingTaskKeys = new Set();
         let claudeCapabilities = {
             claude_cli: 'unsupported',
@@ -1734,36 +1736,41 @@
                 .replaceAll("'", '&#39;');
         }
 
-        function renderTasks(tasks) {
-            const grid = document.getElementById('taskGrid');
-            const sub = document.getElementById('subtitle');
-            latestTasks = Array.isArray(tasks) ? tasks.slice() : [];
+        function getTaskKey(task) {
+            return String((task && (task.task_key || task.log_file)) || '');
+        }
 
-            if (!tasks || tasks.length === 0) {
-                sub.dataset.state = 'idle';
-                sub.textContent = '';
-                grid.innerHTML = buildEmptyStateHtml();
-                requestAnimationFrame(() => updateWindowSize(0));
-                return;
-            }
+        function buildTaskRenderSignature(task) {
+            if (!task || typeof task !== 'object') return '';
+            return JSON.stringify({
+                task_key: getTaskKey(task),
+                tool: task.tool || '',
+                status: task.status || '',
+                message: task.message || '',
+                subtitle: task.subtitle || '',
+                display_badge: task.display_badge || '',
+                terminal_label: task.terminal_label || '',
+                exit_code: Number(task.exit_code || 0),
+                duration: task.duration || '',
+                signal_ts: Number(task.signal_ts || 0),
+                can_refresh: !!task.can_refresh,
+            });
+        }
 
-            const active = tasks.filter(t => t.status !== 'DONE').length;
-            sub.dataset.state = 'summary';
-            sub.textContent = tr('ui_header_summary', { active, total: tasks.length });
-
-            grid.innerHTML = tasks.map((t, i) => {
-                const cls = getCardClass(t);
-                const info = getInfoText(t);
-                const source = getCardSourceText(t);
-                const safeLogFile = t.log_file.replace(/'/g, "\\'");
-                const taskKey = String((t && (t.task_key || t.log_file)) || '');
-                const safeTaskKey = taskKey.replace(/'/g, "\\'");
-                const safeToolName = escapeHtml(t.tool);
-                const safeInfo = escapeHtml(info);
-                const safeSource = escapeHtml(source);
-                const showRefresh = !!t.can_refresh;
-                return `
-        <div class="task-card ${cls}" style="--stagger-index:${i};" data-testid="task-card" data-log-file="${safeLogFile}" onclick="openTask('${safeLogFile}')">
+        function buildTaskCardHtml(task, index) {
+            const t = task || {};
+            const cls = getCardClass(t);
+            const info = getInfoText(t);
+            const source = getCardSourceText(t);
+            const safeLogFile = String(t.log_file || '').replace(/'/g, "\\'");
+            const taskKey = getTaskKey(t);
+            const safeTaskKey = taskKey.replace(/'/g, "\\'");
+            const safeToolName = escapeHtml(t.tool);
+            const safeInfo = escapeHtml(info);
+            const safeSource = escapeHtml(source);
+            const showRefresh = !!t.can_refresh;
+            return `
+        <div class="task-card ${cls}" style="--stagger-index:${index};" data-testid="task-card" data-log-file="${safeLogFile}" data-task-key="${escapeHtml(taskKey)}" onclick="openTask('${safeLogFile}')">
           <div class="status-dot ${cls}"></div>
           <div class="card-body">
             <div class="card-title-row">
@@ -1780,11 +1787,61 @@
                     title="${tr('ui_btn_delete_task')}"><span class="card-action-icon delete-icon">×</span></button>
           </div>
         </div>`;
-            }).join('');
+        }
 
+        function rememberRenderedTasks(tasks) {
+            lastRenderedTaskKeys = Array.isArray(tasks) ? tasks.map(getTaskKey) : [];
+            renderedTaskSignatures = new Map(
+                (Array.isArray(tasks) ? tasks : []).map(task => [getTaskKey(task), buildTaskRenderSignature(task)])
+            );
+        }
 
-            // 自适应窗口高度
-            requestAnimationFrame(() => updateWindowSize(tasks.length));
+        function renderTasks(tasks) {
+            const grid = document.getElementById('taskGrid');
+            const sub = document.getElementById('subtitle');
+            latestTasks = Array.isArray(tasks) ? tasks.slice() : [];
+
+            if (!tasks || tasks.length === 0) {
+                sub.dataset.state = 'idle';
+                sub.textContent = '';
+                if (lastRenderedTaskKeys.length !== 0 || !grid.querySelector('.empty-state')) {
+                    grid.innerHTML = buildEmptyStateHtml();
+                    requestAnimationFrame(() => updateWindowSize(0));
+                }
+                rememberRenderedTasks([]);
+                return;
+            }
+
+            const active = tasks.filter(t => t.status !== 'DONE').length;
+            sub.dataset.state = 'summary';
+            sub.textContent = tr('ui_header_summary', { active, total: tasks.length });
+            const taskKeys = tasks.map(getTaskKey);
+            const sameOrder =
+                taskKeys.length === lastRenderedTaskKeys.length &&
+                taskKeys.every((key, index) => key === lastRenderedTaskKeys[index]);
+
+            let changed = false;
+            if (!sameOrder || grid.children.length !== tasks.length) {
+                grid.innerHTML = tasks.map((t, i) => buildTaskCardHtml(t, i)).join('');
+                changed = true;
+            } else {
+                tasks.forEach((task, index) => {
+                    const taskKey = getTaskKey(task);
+                    const signature = buildTaskRenderSignature(task);
+                    if (renderedTaskSignatures.get(taskKey) === signature) {
+                        return;
+                    }
+                    const currentNode = grid.children[index];
+                    if (!currentNode) return;
+                    currentNode.outerHTML = buildTaskCardHtml(task, index);
+                    changed = true;
+                });
+            }
+
+            rememberRenderedTasks(tasks);
+            if (changed) {
+                requestAnimationFrame(() => updateWindowSize(tasks.length));
+            }
         }
 
         function updateWindowSize(count) {
