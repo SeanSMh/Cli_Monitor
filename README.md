@@ -1,164 +1,55 @@
-# 🛡️ CLI Monitor — 终端任务状态监控系统 (Logcat 模式)
+# CLI Monitor
 
-一个**零侵入**、**零依赖**的 CLI 任务状态监控工具。
+CLI Monitor is a macOS menu bar app for monitoring AI CLI sessions in one place. It helps you track tools like `Codex`, `Claude Code`, and `Gemini`, and shows whether a task is running, waiting for input, needs confirmation, has completed, or has been closed.
 
-在多终端并发执行长耗时任务（AI 代码生成、编译打包等）时，帮你实时感知每个任务的状态——特别是"等待确认"和"任务结束"。
+## 📥 Download
 
-## ✨ 特性
+**Latest macOS Application (.dmg):** [Download monitor.dmg.zip](https://bril.top/monitor.dmg.zip)
 
-- **0 源码修改** — 不需要修改任何 CLI 工具（Claude, Codex, Gradle 等）
-- **0 习惯改变** — 继续用 `claude ...`、`gradle ...` 等原有命令
-- **0 依赖安装** — 纯 Python 标准库 + Shell 原生 `script` 命令
-- **跨平台** — 自动识别 macOS / Linux，选用对应 `script` 参数
-- **实时看板** — 🟢 运行中 / 🟡 待确认(闪烁) / ⚪ 已结束
-- **macOS 状态栏** — 状态栏小工具，待确认时推送系统通知
-- **终端跳转适配** — 已支持 iTerm2 / Terminal，并内置 Warp / WezTerm / VS Code 适配框架
+## Core Features
 
-## 📦 快速安装
+- Automatically monitors AI CLI session states
+- Supports `Running`, `Awaiting Input`, `Needs Action`, `Completed`, and `Closed`
+- Integrates menu bar unread counts with system notifications
+- Task cards support terminal jump, per-card refresh, and record removal
+- Supports light and dark theme switching
+- Supports both Chinese and English UI
+- Can be packaged as macOS `.app` and `.dmg`
 
-```bash
-# 1. 运行安装脚本
-bash install.sh
+## Use Cases
 
-# 2. 使配置生效
-source ~/.zshrc
-```
+CLI Monitor is designed for developers who run multiple AI coding tools in parallel.  
+When working with `Codex`, `Claude Code`, or other terminal-based assistants, it helps you quickly see:
 
-## 🚀 使用方法
+- which task is currently running
+- which task is waiting for your input
+- which task needs confirmation
+- which task has finished or exited unexpectedly
 
-### 启动监控面板
+## Current Support
 
-在一个独立的终端窗口中运行：
+- Codex
+- Claude Code
+- Gemini
+- Gradle / Maven build result detection
+- Multiple terminal and IDE sources such as Terminal, iTerm2, Cursor, and Android Studio
 
-```bash
-python3 monitor.py
-```
+## Product Characteristics
 
-### 正常使用 CLI 工具
+1. Lightweight  
+Runs as a menu bar app without interrupting your workflow.
 
-在另一个终端窗口中照常使用命令：
+2. Focused  
+Uses compact task cards to show only the most important state and summary information.
 
-```bash
-claude "帮我生成一个 Android Activity"
-gradle assembleDebug
-```
+3. Practical  
+Built specifically for interactive AI CLI workflows, not just generic terminal log viewing.
 
-监控面板会自动显示任务状态变化。
+## Platform
 
-### 监控面板参数
+- macOS
+- Distributed as both `.app` and `.dmg`
 
-```bash
-python3 monitor.py --help
+## Version
 
-# 可用选项:
-#   --sound           遇到「待确认」状态时播放提示音
-#   --max-tasks N     最多显示 N 个任务 (默认: 5)
-#   --log-dir DIR     自定义日志目录 (默认: /tmp/ai_monitor_logs)
-#   --refresh SECS    刷新频率 (默认: 1.0 秒)
-```
-
-## 🛠️ 动态管理监控工具
-
-```bash
-# 添加新工具监控
-ai_monitor_add npm
-
-# 移除工具监控
-ai_monitor_remove npm
-
-# 查看当前监控列表
-ai_monitor_list
-```
-
-## 🖥️ macOS 状态栏应用
-
-除了终端看板，还提供 macOS 状态栏小工具：
-
-```bash
-# 安装依赖
-pip3 install pyinstaller pywebview watchdog pyobjc-framework-Cocoa
-
-# 直接运行 (开发模式)
-python3 panel_app.py
-
-# 或打包为独立 .app
-./scripts/build_macos.sh
-# 生成的应用在 dist/CLI Monitor.app
-```
-
-状态栏显示 🛡️ 图标，有待确认任务时自动变为 ⚠️ 并推送系统通知。
-
-E2E 调试模式（自动化校验用）：
-
-```bash
-CLI_MONITOR_E2E=1 CLI_MONITOR_E2E_PORT=18787 python3 panel_app.py
-# GET  /state
-# POST /toggle_panel
-# POST /set_unread?count=1
-# POST /focus_task?log_file=/tmp/ai_monitor_logs/xxx.log
-```
-
-## ✅ 质量检查
-
-```bash
-# 运行测试
-python3 -m pytest -q tests
-
-# 面板 E2E 冒烟 (需本机可启动 GUI)
-./scripts/e2e_panel_flow.sh
-
-# macOS 打包并校验产物
-./scripts/build_macos.sh
-```
-
-## 🗑️ 卸载
-
-```bash
-bash uninstall.sh
-source ~/.zshrc
-```
-
-## 📁 项目结构
-
-```
-cli-monitor/
-├── shell/
-│   └── cli_monitor.sh   # 注入层: Shell 包装函数
-├── monitor.py            # 监控层: Python 终端看板
-├── panel_app.py          # macOS 面板 + 状态栏应用
-├── terminal_adapters.py  # 终端跳转适配层 (iTerm2/Terminal/Warp/WezTerm/VS Code)
-├── CLI Monitor.spec      # PyInstaller 构建配置 (onedir)
-├── scripts/
-│   ├── build_macos.sh    # macOS 打包脚本
-│   └── e2e_panel_flow.sh # 面板交互链路 E2E 冒烟脚本
-├── tests/                # pytest 测试集
-├── install.sh            # 安装脚本
-├── uninstall.sh          # 卸载脚本
-└── README.md             # 本文件
-```
-
-## ⚙️ 工作原理
-
-```
-用户终端  ──Alias拦截──▶  Shell Wrapper  ──前台──▶  正常终端交互
-                              │
-                        后台流写入
-                              │
-                              ▼
-                    临时日志文件 (/tmp/...)
-                              │
-                         实时读取
-                              │
-                              ▼
-                     Python 监控看板  ──▶  状态判定
-                                         🟢 运行中
-                                         🟡 待确认
-                                         ⚪ 已结束
-```
-
-## 📝 兼容性
-
-| 平台 | `script` 版本 | 状态 |
-|------|-------------|------|
-| macOS | BSD script | ✅ 已支持 |
-| Linux | GNU script | ✅ 已支持 |
+Current version: `0.0.10`
