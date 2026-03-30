@@ -33,7 +33,7 @@ def _map_claude_hook_event(previous: TaskState | None, event: MonitorEvent) -> t
     mapped = _CLAUDE_HOOK_STATUS_MAP.get(status_str)
     if mapped is None:
         return None
-    msg = "等待输入" if mapped == STATUS_IDLE else "运行中..."
+    msg = "AI 已完成回复" if mapped == STATUS_IDLE else "运行中..."
     return mapped, msg
 
 
@@ -284,7 +284,9 @@ def reduce_event(previous: TaskState | None, event: MonitorEvent) -> TaskState |
     if event.log_file:
         merged_meta["log_file"] = event.log_file
 
-    # Determine rate_limit_reset_at
+    # Determine rate_limit_reset_at.
+    # Note: _map_claude_hook_event already inspects rateLimitResetAt to set STATUS_RATE_LIMITED.
+    # We re-read it here to extract the actual timestamp value for storage.
     payload = event.payload if isinstance(event.payload, dict) else {}
     new_rate_limit = payload.get("rateLimitResetAt") if source == "claude_hook" else None
     if status != STATUS_RATE_LIMITED:

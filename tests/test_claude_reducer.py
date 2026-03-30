@@ -66,3 +66,10 @@ def test_unknown_source_still_returns_previous():
     prev = TaskState(session_id="sess-1", tool_name="claude", status=STATUS_IDLE)
     state = reduce_event(prev, event)
     assert state is prev  # unchanged
+
+
+def test_unknown_status_from_claude_hook_returns_previous():
+    prev = TaskState(session_id="sess-1", tool_name="claude", status=STATUS_IDLE)
+    event = _make_event("PreToolUse", "unknown_status_xyz")
+    state = reduce_event(prev, event)
+    assert state is prev  # unknown status → no state change
