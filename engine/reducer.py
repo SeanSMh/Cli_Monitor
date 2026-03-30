@@ -8,13 +8,33 @@ from typing import Any
 
 from parsers.common import collect_candidate_texts, extract_first_meaningful_text, extract_waiting_text
 
-from engine.models import MonitorEvent, TaskState
+from engine.models import MonitorEvent, TaskState, STATUS_IDLE, STATUS_RUNNING, STATUS_RATE_LIMITED
 
 WAITING_APPROVAL = "WAITING_APPROVAL"
 WAITING_INPUT = "WAITING_INPUT"
 IDLE_FALLBACK = "AI 已完成回复"
 NOT_LOADED_FALLBACK = "线程未加载"
 WAITING_STATUSES = {WAITING_APPROVAL, WAITING_INPUT}
+
+_CLAUDE_HOOK_STATUS_MAP: dict[str, str] = {
+    "idle": STATUS_IDLE,
+    "running": STATUS_RUNNING,
+}
+
+
+def _map_claude_hook_event(previous: TaskState | None, event: MonitorEvent) -> tuple[str, str] | None:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    rate_limit = payload.get("rateLimitResetAt")
+    status_str = str(payload.get("status", "") or "").lower()
+
+    if rate_limit:
+        return STATUS_RATE_LIMITED, ""
+
+    mapped = _CLAUDE_HOOK_STATUS_MAP.get(status_str)
+    if mapped is None:
+        return None
+    msg = "等待输入" if mapped == STATUS_IDLE else "运行中..."
+    return mapped, msg
 
 
 def now_ms() -> int:
@@ -246,7 +266,10 @@ def reduce_event(previous: TaskState | None, event: MonitorEvent) -> TaskState |
     source = str(event.source or "").strip().lower()
     mapped: tuple[str, str] | None = None
 
-    if source == "codex_proxy":
+    if source == "claude_hook":
+        mapped = _map_claude_hook_event(previous, event)
+
+    elif source == "codex_proxy":
         mapped = _map_codex_proxy_event(previous, event)
         if mapped is None:
             mapped = _map_server_request(event.event_type, event.payload)
@@ -260,6 +283,16 @@ def reduce_event(previous: TaskState | None, event: MonitorEvent) -> TaskState |
     merged_meta.update(event.meta or {})
     if event.log_file:
         merged_meta["log_file"] = event.log_file
+
+    # Determine rate_limit_reset_at
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    new_rate_limit = payload.get("rateLimitResetAt") if source == "claude_hook" else None
+    if status != STATUS_RATE_LIMITED:
+        new_rate_limit = None
+
+    # Preserve subagents from previous state
+    prev_subagents = previous.subagents if previous else []
+
     if status in WAITING_STATUSES:
         if previous and previous.status not in WAITING_STATUSES:
             merged_meta["waiting_restore_status"] = previous.status
@@ -285,4 +318,6 @@ def reduce_event(previous: TaskState | None, event: MonitorEvent) -> TaskState |
         updated_at_ms=int(event.ts_ms or now_ms()),
         log_file=event.log_file or (previous.log_file if previous else ""),
         meta=merged_meta,
+        rate_limit_reset_at=new_rate_limit,
+        subagents=list(prev_subagents),
     )
