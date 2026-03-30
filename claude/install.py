@@ -11,6 +11,8 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
 def install(receiver_abs_path: str) -> None:
+    if not Path(receiver_abs_path).is_absolute():
+        raise ValueError(f"receiver_abs_path must be absolute, got: {receiver_abs_path!r}")
     settings = {}
     if SETTINGS_PATH.exists():
         try:
@@ -18,7 +20,8 @@ def install(receiver_abs_path: str) -> None:
         except Exception:
             settings = {}
         backup = SETTINGS_PATH.with_suffix(".json.cli-monitor-backup")
-        shutil.copy2(SETTINGS_PATH, backup)
+        if not backup.exists():
+            shutil.copy2(SETTINGS_PATH, backup)
     settings["statusCommand"] = f"python3 {receiver_abs_path}"
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -30,7 +33,7 @@ def uninstall() -> None:
     try:
         settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return
+        return  # corrupt settings.json — skip silently (statusCommand may not be removed)
     settings.pop("statusCommand", None)
     SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 

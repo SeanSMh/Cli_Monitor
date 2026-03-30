@@ -60,3 +60,11 @@ def test_uninstall_is_noop_when_settings_missing(tmp_path, monkeypatch):
     settings_file = tmp_path / "nonexistent.json"
     monkeypatch.setattr("claude.install.SETTINGS_PATH", settings_file)
     uninstall()  # should not raise
+
+
+def test_install_raises_on_relative_path(tmp_path, monkeypatch):
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr("claude.install.SETTINGS_PATH", settings_file)
+    import pytest
+    with pytest.raises(ValueError, match="must be absolute"):
+        install(receiver_abs_path="relative/path/receiver.py")
