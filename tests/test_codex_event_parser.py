@@ -46,6 +46,12 @@ class CodexEventParserTests(unittest.TestCase):
         self.assertEqual(status, "IDLE")
         self.assertEqual(msg, "AI 已完成回复")
 
+    def test_item_completed_stays_running(self):
+        lines = ['{"event":{"type":"item.completed"},"message":"done"}\n']
+        status, msg = parse_codex_structured_status(lines) or ("", "")
+        self.assertEqual(status, "RUNNING")
+        self.assertIn("done", msg)
+
     def test_parses_sse_data_prefix(self):
         lines = ['data: {"type":"turn.started","message":"Planning"}\n']
         status, msg = parse_codex_structured_status(lines) or ("", "")

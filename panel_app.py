@@ -20,10 +20,37 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-import webview
+try:
+    import webview
+except ImportError:
+    class _WebviewStubWindow:
+        def hide(self):
+            return None
+
+        def show(self):
+            return None
+
+        def destroy(self):
+            return None
+
+    class _WebviewStub:
+        windows = []
+
+        @staticmethod
+        def create_window(*args, **kwargs):
+            window = _WebviewStubWindow()
+            _WebviewStub.windows.append(window)
+            return window
+
+        @staticmethod
+        def start(*args, **kwargs):
+            return None
+
+    webview = _WebviewStub()
 
 # PyObjC (macOS 状态栏)
 try:
@@ -75,29 +102,53 @@ if HAS_APPKIT:
         UN_AVAILABLE = False
 
 # 项目路径
-if getattr(sys, "frozen", False):
-    SCRIPT_DIR = sys._MEIPASS
-else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SCRIPT_DIR)
+def _resolve_code_dir() -> str:
+    if getattr(sys, "frozen", False):
+        bundled_dir = getattr(sys, "_MEIPASS", "")
+        if bundled_dir:
+            return os.path.abspath(bundled_dir)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_resource_dir() -> str:
+    if getattr(sys, "frozen", False):
+        resource_dir = os.environ.get("RESOURCEPATH", "")
+        if resource_dir:
+            return os.path.abspath(resource_dir)
+        bundled_dir = getattr(sys, "_MEIPASS", "")
+        if bundled_dir:
+            bundled_dir = os.path.abspath(bundled_dir)
+            framework_dir = os.path.basename(bundled_dir)
+            if framework_dir == "Frameworks":
+                sibling_resources = os.path.join(os.path.dirname(bundled_dir), "Resources")
+                if os.path.isdir(sibling_resources):
+                    return os.path.abspath(sibling_resources)
+            return os.path.abspath(bundled_dir)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+CODE_DIR = _resolve_code_dir()
+RESOURCE_DIR = _resolve_resource_dir()
+sys.path.insert(0, CODE_DIR)
 
 # 启动日志 (调试打包问题)
 _BOOT_LOG = "/tmp/cli_monitor_boot.log"
 def _log(msg):
     try:
-        with open(_BOOT_LOG, "a") as f:
+        with open(_BOOT_LOG, "a", encoding="utf-8", errors="ignore") as f:
             f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
     except Exception:
         pass
-_log(f"启动: frozen={getattr(sys, 'frozen', False)} SCRIPT_DIR={SCRIPT_DIR}")
-_log(f"panel.html: {os.path.exists(os.path.join(SCRIPT_DIR, 'panel.html'))}")
-_log(f"monitor.py: {os.path.exists(os.path.join(SCRIPT_DIR, 'monitor.py'))}")
-_log(f"shell/cli_monitor.sh: {os.path.exists(os.path.join(SCRIPT_DIR, 'shell', 'cli_monitor.sh'))}")
+_log(f"启动: frozen={getattr(sys, 'frozen', False)} CODE_DIR={CODE_DIR} RESOURCE_DIR={RESOURCE_DIR}")
+_log(f"panel.html: {os.path.exists(os.path.join(RESOURCE_DIR, 'panel.html'))}")
+_log(f"monitor.py: {os.path.exists(os.path.join(CODE_DIR, 'monitor.py'))}")
+_log(f"shell/cli_monitor.sh: {os.path.exists(os.path.join(RESOURCE_DIR, 'shell', 'cli_monitor.sh'))}")
 
 from monitor import (
     analyze_log,
     parse_start_info,
     parse_session_meta,
+    parse_end_info,
     calculate_duration,
     clear_rate_history,
     get_codex_parse_stats,
@@ -112,7 +163,7 @@ from terminal_adapters import SessionMeta, TerminalFocusService
 # === 配置 ===
 LOG_DIR = os.environ.get("AI_MONITOR_DIR", DEFAULT_LOG_DIR)
 MAX_TASKS = 8
-PANEL_HTML = os.path.join(SCRIPT_DIR, "panel.html")
+PANEL_HTML = os.path.join(RESOURCE_DIR, "panel.html")
 APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/CLI Monitor")
 SETTINGS_FILE = os.path.join(APP_SUPPORT_DIR, "settings.json")
 DEFAULT_LANGUAGE = "zh-CN"
@@ -122,6 +173,8 @@ I18N = {
     "zh-CN": {
         "badge.running": "运行中",
         "badge.waiting": "待确认",
+        "badge.waiting_approval": "待审批",
+        "badge.waiting_input": "待输入",
         "badge.idle": "等待输入",
         "badge.done": "已完成",
         "badge.closed": "已关闭",
@@ -131,6 +184,8 @@ I18N = {
         "subtitle.done.exit_code": "退出码 {code}",
         "subtitle.done.ended": "任务已结束",
         "subtitle.waiting.fallback": "等待确认输入",
+        "subtitle.waiting.approval": "等待审批",
+        "subtitle.waiting.input": "等待用户输入",
         "subtitle.idle.ai_done": "AI 已完成回复",
         "subtitle.idle.wait_next": "等待下一步输入",
         "subtitle.running.fallback": "运行中...",
@@ -140,6 +195,8 @@ I18N = {
     "en-US": {
         "badge.running": "Running",
         "badge.waiting": "Needs Action",
+        "badge.waiting_approval": "Needs Approval",
+        "badge.waiting_input": "Needs Input",
         "badge.idle": "Awaiting Input",
         "badge.done": "Completed",
         "badge.closed": "Closed",
@@ -149,6 +206,8 @@ I18N = {
         "subtitle.done.exit_code": "Exit code {code}",
         "subtitle.done.ended": "Task ended",
         "subtitle.waiting.fallback": "Awaiting confirmation",
+        "subtitle.waiting.approval": "Awaiting approval",
+        "subtitle.waiting.input": "Awaiting user input",
         "subtitle.idle.ai_done": "AI response finished",
         "subtitle.idle.wait_next": "Waiting for next input",
         "subtitle.running.fallback": "Running...",
@@ -159,9 +218,11 @@ I18N = {
 
 # 临时注入
 TEMP_WRAPPER = "/tmp/cli_monitor_session.sh"
+LEGACY_CODEX_LAUNCHER = "/tmp/codex_launcher.sh"
 INJECT_MARKER = "# >>> cli-monitor-session >>>"
 INJECT_END = "# <<< cli-monitor-session <<<"
-SHELL_WRAPPER_SOURCE = os.path.join(SCRIPT_DIR, "shell", "cli_monitor.sh")
+SHELL_WRAPPER_SOURCE = os.path.join(RESOURCE_DIR, "shell", "cli_monitor.sh")
+CODEX_MONITORED_LAUNCHER = os.path.join(RESOURCE_DIR, "shell", "codex_launcher.sh")
 
 # Claude Code Hooks 注入
 CLAUDE_SETTINGS = os.path.expanduser("~/.claude/settings.json")
@@ -336,6 +397,7 @@ _window_visible = True
 _app_quitting = False
 _status_item = None
 _sb_delegate = None
+_app_delegate = None
 _resize_delegate = None
 _api = None
 _status_icon_image = None
@@ -360,9 +422,14 @@ _GENERIC_WAITING_MESSAGES = {
     "等待确认输入",
     "Awaiting confirmation",
     "Need confirmation",
+    "等待审批",
+    "Awaiting approval",
+    "等待输入",
+    "Awaiting user input",
 }
-_SEMANTIC_WAITING_TOOLS = {"claude", "codex"}
-_SEMANTIC_IDLE_TOOLS = {"codex"}
+_WAITING_STATUSES = {"WAITING", "WAITING_APPROVAL", "WAITING_INPUT"}
+_SEMANTIC_WAITING_TOOLS = {"claude"}
+_SEMANTIC_IDLE_TOOLS = set()
 _GENERIC_RUNNING_MESSAGES = {
     "",
     "运行中...",
@@ -379,6 +446,114 @@ _claude_cli_capabilities = {
 }
 _claude_cli_capabilities_checked_at = 0
 _claude_cli_capabilities_lock = threading.Lock()
+
+
+def _build_legacy_codex_launcher_content() -> str:
+    return """#!/usr/bin/env bash
+set -e
+real_codex="$(type -P codex 2>/dev/null || true)"
+if [[ -z "$real_codex" && -n "${ZSH_VERSION:-}" ]]; then
+    real_codex="$(whence -p codex 2>/dev/null || true)"
+fi
+if [[ -n "$real_codex" ]]; then
+    exec "$real_codex" "$@"
+fi
+if [[ -x "/Applications/Codex.app/Contents/Resources/codex" ]]; then
+    exec "/Applications/Codex.app/Contents/Resources/codex" "$@"
+fi
+echo "codex binary not found" >&2
+exit 127
+"""
+
+
+def _codex_monitor_mode(tool_name, meta):
+    if str(tool_name or "").strip().lower() != "codex":
+        return ""
+    source = str((meta or {}).get("state_source", "") or "").strip().lower()
+    if source == "codex_proxy":
+        return "monitored"
+    return "normal"
+
+
+def _quote_applescript_string(text: str) -> str:
+    value = str(text or "")
+    value = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{value}"'
+
+
+def _run_osascript(script: str) -> bool:
+    try:
+        res = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def _launch_terminal_command(command: str) -> bool:
+    command = str(command or "").strip()
+    if not command:
+        return False
+    script = (
+        'tell application "Terminal"\n'
+        "activate\n"
+        f"do script {_quote_applescript_string(command)}\n"
+        "end tell"
+    )
+    return _run_osascript(script)
+
+
+def _new_launch_token() -> str:
+    return f"launch_{uuid.uuid4().hex}"
+
+
+def _find_log_for_launch_token(tool_name: str, launch_token: str) -> str:
+    tool_key = str(tool_name or "").strip().lower()
+    token = str(launch_token or "").strip()
+    if not token or not os.path.isdir(LOG_DIR):
+        return ""
+    log_files = glob.glob(os.path.join(LOG_DIR, "*.log"))
+    log_files.sort(key=os.path.getmtime, reverse=True)
+    for log_file in log_files[:64]:
+        try:
+            meta = parse_session_meta(log_file)
+        except Exception:
+            continue
+        if str(meta.get("launch_token", "") or "").strip() != token:
+            continue
+        parsed_tool, _ = parse_start_info(log_file)
+        if str(parsed_tool or "").strip().lower() != tool_key:
+            continue
+        return log_file
+    return ""
+
+
+def _wait_for_launch_token(tool_name: str, launch_token: str, timeout_seconds: float = 3.0) -> bool:
+    deadline = time.time() + max(0.1, float(timeout_seconds))
+    log_file = ""
+    while time.time() < deadline:
+        log_file = _find_log_for_launch_token(tool_name, launch_token)
+        if log_file:
+            break
+        time.sleep(0.1)
+    if not log_file:
+        return False
+
+    settle_deadline = min(deadline, time.time() + 1.2)
+    while time.time() < settle_deadline:
+        if not os.path.exists(log_file):
+            return False
+        ended, _, _ = parse_end_info(tail_read(log_file))
+        if ended:
+            return False
+        time.sleep(0.1)
+
+    ended, _, _ = parse_end_info(tail_read(log_file))
+    return not ended
 
 
 def _normalize_language(lang):
@@ -541,11 +716,16 @@ def _get_rc_file():
 
 def inject_shell_wrapper():
     try:
-        with open(SHELL_WRAPPER_SOURCE, "r") as src:
+        with open(SHELL_WRAPPER_SOURCE, "r", encoding="utf-8", errors="ignore") as src:
             content = src.read()
-        with open(TEMP_WRAPPER, "w") as dst:
+        with open(TEMP_WRAPPER, "w", encoding="utf-8") as dst:
             dst.write(content)
         os.chmod(TEMP_WRAPPER, 0o644)
+
+        legacy_content = _build_legacy_codex_launcher_content()
+        with open(LEGACY_CODEX_LAUNCHER, "w", encoding="utf-8") as dst:
+            dst.write(legacy_content)
+        os.chmod(LEGACY_CODEX_LAUNCHER, 0o755)
     except Exception as e:
         print(f"[CLI Monitor] 写入临时 wrapper 失败: {e}")
         return False
@@ -554,7 +734,7 @@ def inject_shell_wrapper():
     try:
         existing = ""
         if os.path.exists(rc_file):
-            with open(rc_file, "r") as f:
+            with open(rc_file, "r", encoding="utf-8", errors="ignore") as f:
                 existing = f.read()
         if INJECT_MARKER in existing:
             return True
@@ -564,7 +744,7 @@ def inject_shell_wrapper():
             f'[[ -f "{TEMP_WRAPPER}" ]] && source "{TEMP_WRAPPER}"\n'
             f"{INJECT_END}\n"
         )
-        with open(rc_file, "a") as f:
+        with open(rc_file, "a", encoding="utf-8") as f:
             f.write(inject_block)
         print(f"[CLI Monitor] ✅ 已注入到 {rc_file}")
         return True
@@ -582,7 +762,7 @@ def cleanup_shell_wrapper():
     rc_file = _get_rc_file()
     try:
         if os.path.exists(rc_file):
-            with open(rc_file, "r") as f:
+            with open(rc_file, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
             new_lines, in_block = [], False
             for line in lines:
@@ -594,7 +774,7 @@ def cleanup_shell_wrapper():
                     continue
                 if not in_block:
                     new_lines.append(line)
-            with open(rc_file, "w") as f:
+            with open(rc_file, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
             print(f"[CLI Monitor] ✅ 已从 {rc_file} 清理注入内容")
     except Exception:
@@ -603,6 +783,8 @@ def cleanup_shell_wrapper():
     try:
         if os.path.exists(TEMP_WRAPPER):
             os.remove(TEMP_WRAPPER)
+        if os.path.exists(LEGACY_CODEX_LAUNCHER):
+            os.remove(LEGACY_CODEX_LAUNCHER)
     except Exception:
         pass
 
@@ -622,7 +804,7 @@ def inject_claude_hooks():
         # 读取现有配置
         settings = {}
         if os.path.exists(CLAUDE_SETTINGS):
-            with open(CLAUDE_SETTINGS, "r") as f:
+            with open(CLAUDE_SETTINGS, "r", encoding="utf-8", errors="ignore") as f:
                 settings = json.load(f)
 
         hooks = settings.get("hooks", {})
@@ -681,7 +863,7 @@ def inject_claude_hooks():
         settings["hooks"] = hooks
 
         # 写回
-        with open(CLAUDE_SETTINGS, "w") as f:
+        with open(CLAUDE_SETTINGS, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
 
         print(f"[CLI Monitor] ✅ Claude Hooks 已注入 ({', '.join(added)})")
@@ -697,7 +879,7 @@ def cleanup_claude_hooks():
         return
 
     try:
-        with open(CLAUDE_SETTINGS, "r") as f:
+        with open(CLAUDE_SETTINGS, "r", encoding="utf-8", errors="ignore") as f:
             settings = json.load(f)
 
         hooks = settings.get("hooks", {})
@@ -739,7 +921,7 @@ def cleanup_claude_hooks():
         else:
             settings.pop("hooks", None)
 
-        with open(CLAUDE_SETTINGS, "w") as f:
+        with open(CLAUDE_SETTINGS, "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2, ensure_ascii=False)
 
         # 清理信号文件
@@ -943,6 +1125,12 @@ def _build_card_subtitle(tool_name, status, msg, exit_code, duration, signal_ts,
             return _append_terminal_hint(_t("subtitle.done.exit_code", lang, code=exit_code), terminal_label)
         return _append_terminal_hint(_t("subtitle.done.ended", lang), terminal_label)
 
+    if status == "WAITING_APPROVAL":
+        return _append_terminal_hint(msg or _t("subtitle.waiting.approval", lang), terminal_label)
+
+    if status == "WAITING_INPUT":
+        return _append_terminal_hint(msg or _t("subtitle.waiting.input", lang), terminal_label)
+
     if status == "WAITING":
         return _append_terminal_hint(msg or _t("subtitle.waiting.fallback", lang), terminal_label)
 
@@ -976,6 +1164,10 @@ def _notification_status_label(status, exit_code, lang=None):
         if exit_code and exit_code > 0:
             return _t("badge.error", lang)
         return _t("badge.done", lang)
+    if status == "WAITING_APPROVAL":
+        return _t("badge.waiting_approval", lang)
+    if status == "WAITING_INPUT":
+        return _t("badge.waiting_input", lang)
     if status == "WAITING":
         return _t("badge.waiting", lang)
     if status == "IDLE":
@@ -998,6 +1190,10 @@ def _card_badge_label(status, exit_code, lang=None):
         if exit_code < 0:
             return _t("badge.ended", lang)
         return _t("badge.done", lang)
+    if status == "WAITING_APPROVAL":
+        return _t("badge.waiting_approval", lang)
+    if status == "WAITING_INPUT":
+        return _t("badge.waiting_input", lang)
     if status == "WAITING":
         return _t("badge.waiting", lang)
     if status == "IDLE":
@@ -1023,6 +1219,7 @@ def _translate_system_message_for_display(text, lang=None):
         "初始化...": _t("subtitle.running.fallback", lang),
         "运行中...": _t("subtitle.running.fallback", lang),
         "等待确认输入": _t("subtitle.waiting.fallback", lang),
+        "等待审批": _t("subtitle.waiting.approval", lang),
         "等待输入": _t("badge.idle", lang),
         "等待下一步输入": _t("subtitle.idle.wait_next", lang),
         "AI 已完成回复": _t("subtitle.idle.ai_done", lang),
@@ -1084,27 +1281,31 @@ def update_status_icon(alert_count):
 
 if HAS_APPKIT:
 
+    def _show_panel_from_app_event():
+        global _window_visible, _api
+        if _app_quitting:
+            return False
+        if _window is None:
+            return False
+        try:
+            _window.show()
+        except Exception:
+            pass
+        _window_visible = True
+        try:
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+        if _api is not None:
+            _api.clear_unread_notifications()
+        return True
+
     class StatusBarDelegate(NSObject):
         """状态栏点击代理 + 主线程调度"""
 
         @objc.python_method
         def show_panel(self):
-            global _window_visible, _api
-            if _app_quitting:
-                return
-            if _window is None:
-                return
-            try:
-                _window.show()
-            except Exception:
-                pass
-            _window_visible = True
-            try:
-                NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-            except Exception:
-                pass
-            if _api is not None:
-                _api.clear_unread_notifications()
+            _show_panel_from_app_event()
 
         @objc.python_method
         def toggle_panel(self):
@@ -1184,6 +1385,24 @@ if HAS_APPKIT:
                     completionHandler()
             except Exception:
                 pass
+
+
+    class AppLifecycleDelegate(NSObject):
+        """Dock 点击/应用重新激活时恢复主面板。"""
+
+        def applicationShouldHandleReopen_hasVisibleWindows_(self, app, flag):
+            try:
+                _show_panel_from_app_event()
+            except Exception as e:
+                _log(f"处理应用重开失败: {e}")
+            return True
+
+        def applicationDidBecomeActive_(self, notification):
+            try:
+                if not _is_panel_visible_and_frontmost():
+                    _show_panel_from_app_event()
+            except Exception as e:
+                _log(f"处理应用激活失败: {e}")
 
 
     class ResizeDelegate(NSObject):
@@ -1302,7 +1521,7 @@ def _load_statusbar_icon_image():
     if not HAS_APPKIT:
         return None
     try:
-        icon_path = os.path.join(SCRIPT_DIR, "assets", "app_icon.png")
+        icon_path = os.path.join(RESOURCE_DIR, "assets", "app_icon.png")
         img = None
         if os.path.exists(icon_path):
             img = NSImage.alloc().initWithContentsOfFile_(icon_path)
@@ -1577,6 +1796,7 @@ class Api:
         terminal_label = _get_terminal_label(meta)
 
         tool_name, status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
+        codex_mode = _codex_monitor_mode(tool_name, meta)
 
         if status == "DONE":
             self._forced_done_cache.pop(log_file, None)
@@ -1637,6 +1857,7 @@ class Api:
         return {
             "task_key": log_file,
             "tool": tool_name,
+            "mode": codex_mode,
             "status": status,
             "message": msg,
             "subtitle": subtitle,
@@ -1685,7 +1906,7 @@ class Api:
             return {"ok": False, "reason": "not_found"}
 
         self._task_states[log_file] = task["status"]
-        if task["status"] == "WAITING":
+        if task["status"] in _WAITING_STATUSES:
             self._last_waiting_fingerprint[log_file] = self._build_waiting_fingerprint(task)
         else:
             self._last_waiting_fingerprint.pop(log_file, None)
@@ -1890,7 +2111,7 @@ class Api:
         if not log_file or tool_name not in _SEMANTIC_WAITING_TOOLS:
             return status, message
 
-        if status == "WAITING":
+        if status in _WAITING_STATUSES:
             fingerprint = self._build_semantic_waiting_fingerprint(
                 log_file, tool_name, message, include_fallback=True
             )
@@ -1956,7 +2177,7 @@ class Api:
             }
             return status, message
 
-        if status in {"WAITING", "DONE"}:
+        if status in (_WAITING_STATUSES | {"DONE"}):
             self._semantic_idle_cache.pop(log_file, None)
             return status, message
 
@@ -2001,7 +2222,7 @@ class Api:
         if not log_file:
             return None
 
-        if status == "WAITING":
+        if status in _WAITING_STATUSES:
             waiting_fp = self._build_waiting_fingerprint(task)
             prev_waiting_fp = self._last_waiting_fingerprint.get(log_file, "")
             self._last_waiting_fingerprint[log_file] = waiting_fp
@@ -2012,7 +2233,7 @@ class Api:
                 "status": status,
                 "priority": 300,
                 "signal_ts": 0,
-                "dedupe_key": f"{log_file}:WAITING:{fp_key}",
+                "dedupe_key": f"{log_file}:{status}:{fp_key}",
             }
 
         self._last_waiting_fingerprint.pop(log_file, None)
@@ -2072,7 +2293,7 @@ class Api:
 
             # 用户在终端里继续操作后，任务通常会从 WAITING/IDLE 回到 RUNNING。
             # 这说明对应提醒已被处理，自动清理该任务未读计数。
-            if status == "RUNNING" and prev_status in {"WAITING", "IDLE"}:
+            if status == "RUNNING" and prev_status in (_WAITING_STATUSES | {"IDLE"}):
                 self._clear_unread_for_task(log_file)
 
             event = self._build_notification_event(task, prev_status)
@@ -2153,6 +2374,35 @@ class Api:
     def open_logs(self):
         os.makedirs(LOG_DIR, exist_ok=True)
         subprocess.run(["open", LOG_DIR])
+
+    def _launch_codex_in_terminal(self, monitored=False):
+        if not inject_shell_wrapper():
+            return {"ok": False, "mode": "monitored" if monitored else "normal"}
+        monitored = bool(monitored)
+        launch_token = _new_launch_token()
+        if monitored:
+            command = (
+                f'CLI_MONITOR_LAUNCH_TOKEN={shlex.quote(launch_token)} '
+                f'bash {shlex.quote(CODEX_MONITORED_LAUNCHER)}'
+            )
+        else:
+            wrapper = shlex.quote(TEMP_WRAPPER)
+            command = (
+                f'[[ -f {wrapper} ]] || exit 127; '
+                f'source {wrapper}; '
+                'type codex >/dev/null 2>&1 || exit 127; '
+                f'CLI_MONITOR_LAUNCH_TOKEN={shlex.quote(launch_token)} codex'
+            )
+        ok = _launch_terminal_command(command)
+        if ok:
+            ok = _wait_for_launch_token("codex", launch_token)
+        return {"ok": ok, "mode": "monitored" if monitored else "normal"}
+
+    def launch_codex(self):
+        return self._launch_codex_in_terminal(monitored=False)
+
+    def launch_codex_monitored(self):
+        return self._launch_codex_in_terminal(monitored=True)
 
     def delete_task(self, log_file):
         """删除任务日志文件"""
@@ -2268,7 +2518,17 @@ class Api:
         _window_visible = False
         _log("quit_app: begin fast-exit")
         _schedule_force_exit()
-        # 退出路径优先关闭窗口，重清理逻辑由 atexit 统一执行，避免 UI 卡死。
+        # 先同步清理 shell 注入，避免进程已退出但 rc 注入仍然残留。
+        try:
+            cleanup_shell_wrapper()
+        except Exception as e:
+            _log(f"quit_app: cleanup shell wrapper failed: {e}")
+        try:
+            cleanup_claude_hooks()
+        except Exception as e:
+            _log(f"quit_app: cleanup claude hooks failed: {e}")
+
+        # 再请求 GUI 退出；atexit 保留为兜底，而不是主清理路径。
         _stop_e2e_server()
         remove_status_item_from_thread(wait_until_done=False)
         if not _request_app_terminate():
@@ -2354,13 +2614,20 @@ def cleanup_stale_logs():
 
 
 def main():
-    global _window, _api
+    global _window, _api, _app_delegate
     _log("main() 开始")
     os.makedirs(LOG_DIR, exist_ok=True)
     cleanup_stale_logs()  # <--- 启动时清理
 
     caps, checked_at = _refresh_claude_cli_capabilities()
     _log(f"claude capabilities: {caps} checked_at={checked_at}")
+
+    if HAS_APPKIT:
+        try:
+            _app_delegate = AppLifecycleDelegate.alloc().init()
+            NSApplication.sharedApplication().setDelegate_(_app_delegate)
+        except Exception as e:
+            _log(f"安装应用生命周期代理失败: {e}")
 
     inject_shell_wrapper()
     inject_claude_hooks()

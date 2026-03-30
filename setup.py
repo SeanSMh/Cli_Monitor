@@ -11,11 +11,13 @@ from setuptools import setup
 APP = ["panel_app.py"]
 DATA_FILES = [
     "panel.html",
-    ("shell", ["shell/cli_monitor.sh"])
+    ("shell", ["shell/cli_monitor.sh", "shell/codex_launcher.sh"]),
+    ("assets", ["assets/app_icon.icns", "assets/app_icon.png"]),
 ]
 
 OPTIONS = {
     "argv_emulation": False,
+    "iconfile": "assets/app_icon.icns",
     "plist": {
         "CFBundleName": "CLI Monitor",
         "CFBundleDisplayName": "CLI Monitor",
@@ -29,8 +31,17 @@ OPTIONS = {
         # Usually these apps hide from Dock. Let's keep LSUIElement=True.
         "NSHumanReadableCopyright": "CLI Monitor v0.0.10",
     },
-    "includes": ["webview", "monitor", "watchdog", "config_loader", "AppKit", "Foundation", "objc"],
-    "packages": ["watchdog"],
+    "includes": [
+        "webview",
+        "monitor",
+        "watchdog",
+        "config_loader",
+        "daemon_client",
+        "AppKit",
+        "Foundation",
+        "objc",
+    ],
+    "packages": ["watchdog", "daemon", "engine", "proxy", "registry"],
 }
 
 setup(

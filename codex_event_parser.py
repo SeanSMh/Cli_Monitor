@@ -83,6 +83,14 @@ def _has_token(event_types: list[str], tokens: tuple[str, ...]) -> bool:
     return False
 
 
+def _contains_exact_event(event_types: list[str], needle: str) -> bool:
+    needle_key = str(needle or "").strip().lower()
+    for event_type in event_types:
+        if str(event_type or "").strip().lower() == needle_key:
+            return True
+    return False
+
+
 def parse_codex_structured_status(
     lines: list[str], waiting_patterns: list[str] | None = None
 ) -> tuple[str, str] | None:
@@ -112,6 +120,11 @@ def parse_codex_structured_status(
         waiting_text = extract_waiting_text(texts, waiting_patterns, line_limit=200)
         if waiting_text:
             return "WAITING", waiting_text
+
+        if _contains_exact_event(event_types, "item.completed"):
+            saw_structured_signal = True
+            msg = extract_first_meaningful_text(texts, dotted_mode="dot_only")
+            return "RUNNING", msg or "运行中..."
 
         if _has_token(event_types, _WAITING_TYPE_TOKENS):
             saw_structured_signal = True

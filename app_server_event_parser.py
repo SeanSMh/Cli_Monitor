@@ -79,6 +79,14 @@ def _has_token(values: list[str], tokens: tuple[str, ...]) -> bool:
     return False
 
 
+def _contains_exact_method(values: list[str], needle: str) -> bool:
+    needle_key = str(needle or "").strip().lower()
+    for value in values:
+        if str(value or "").strip().lower() == needle_key:
+            return True
+    return False
+
+
 def parse_app_server_status(
     lines: list[str], waiting_patterns: list[str] | None = None
 ) -> tuple[str, str] | None:
@@ -102,6 +110,11 @@ def parse_app_server_status(
         waiting_text = extract_waiting_text(texts, waiting_patterns, line_limit=200)
         if waiting_text:
             return "WAITING", waiting_text
+
+        if _contains_exact_method(methods, "item/completed"):
+            saw_signal = True
+            msg = extract_first_meaningful_text(texts, dotted_mode="slash_or_dot")
+            return "RUNNING", msg or "运行中..."
 
         if _has_token(methods, _WAITING_METHOD_TOKENS):
             saw_signal = True

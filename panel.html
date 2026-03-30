@@ -1078,6 +1078,18 @@
             max-width: 100%;
         }
 
+        .card-mode {
+            font-size: 10px;
+            line-height: 1;
+            padding: 4px 7px;
+            border-radius: 999px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            white-space: nowrap;
+            flex: 0 0 auto;
+        }
+
         .card-source {
             font-size: 10px;
             line-height: 1;
@@ -1362,6 +1374,8 @@
 
     <div class="footer">
         <div class="footer-left">
+            <button class="btn" onclick="launchCodex()" id="openCodexBtn" data-testid="open-codex-btn">打开 Codex</button>
+            <button class="btn" onclick="launchCodexMonitored()" id="openCodexMonitoredBtn" data-testid="open-codex-monitored-btn">打开 Codex Monitored</button>
             <button class="btn icon-only" onclick="clearDone()" title="清除已完成" id="clearDoneBtn" data-testid="clear-done-btn">🗑</button>
         </div>
         <button class="btn quit icon-only" onclick="quit()" title="退出" id="quitBtn" data-testid="quit-btn">⏻</button>
@@ -1422,6 +1436,9 @@
         let lastRenderedTaskKeys = [];
         let renderedTaskSignatures = new Map();
         const refreshingTaskKeys = new Set();
+        let bridgeBootstrapStarted = false;
+        let bridgeBootstrapDone = false;
+        let bridgePollHandle = null;
         let claudeCapabilities = {
             claude_cli: 'unsupported',
             remote_control: 'unsupported',
@@ -1455,6 +1472,8 @@
                 ui_btn_quit: '退出',
                 ui_btn_close: '关闭',
                 ui_btn_delete_task: '删除任务',
+                ui_btn_open_codex: '打开 Codex',
+                ui_btn_open_codex_monitored: '打开 Codex Monitored',
                 settings_title: '设置',
                 settings_language: '语言',
                 settings_lang_zh: '中文（简体）',
@@ -1477,6 +1496,8 @@
                 badge_error: '异常退出',
                 badge_closed: '已关闭',
                 badge_ended: '已结束',
+                mode_normal: '普通',
+                mode_monitored: 'Monitored',
             },
             'en-US': {
                 ui_loading: 'Loading...',
@@ -1492,6 +1513,8 @@
                 ui_btn_quit: 'Quit',
                 ui_btn_close: 'Close',
                 ui_btn_delete_task: 'Delete task',
+                ui_btn_open_codex: 'Open Codex',
+                ui_btn_open_codex_monitored: 'Open Codex Monitored',
                 settings_title: 'Settings',
                 settings_language: 'Language',
                 settings_lang_zh: 'Chinese (Simplified)',
@@ -1514,6 +1537,8 @@
                 badge_error: 'Failed',
                 badge_closed: 'Closed',
                 badge_ended: 'Ended',
+                mode_normal: 'Normal',
+                mode_monitored: 'Monitored',
             },
         };
 
@@ -1677,6 +1702,10 @@
             if (clearDoneBtn) clearDoneBtn.title = tr('ui_btn_clear_done');
             const quitBtn = document.getElementById('quitBtn');
             if (quitBtn) quitBtn.title = tr('ui_btn_quit');
+            const openCodexBtn = document.getElementById('openCodexBtn');
+            if (openCodexBtn) openCodexBtn.textContent = tr('ui_btn_open_codex');
+            const openCodexMonitoredBtn = document.getElementById('openCodexMonitoredBtn');
+            if (openCodexMonitoredBtn) openCodexMonitoredBtn.textContent = tr('ui_btn_open_codex_monitored');
             const settingsCloseBtn = document.getElementById('settingsCloseBtn');
             if (settingsCloseBtn) settingsCloseBtn.title = tr('ui_btn_close');
             renderClaudeCapabilities();
@@ -1727,6 +1756,13 @@
             return source;
         }
 
+        function getModeText(t) {
+            const mode = String((t && t.mode) || '').trim().toLowerCase();
+            if (mode === 'monitored') return tr('mode_monitored');
+            if (mode === 'normal') return tr('mode_normal');
+            return '';
+        }
+
         function escapeHtml(text) {
             return String(text || '')
                 .replaceAll('&', '&amp;')
@@ -1750,6 +1786,7 @@
                 subtitle: task.subtitle || '',
                 display_badge: task.display_badge || '',
                 terminal_label: task.terminal_label || '',
+                mode: task.mode || '',
                 exit_code: Number(task.exit_code || 0),
                 duration: task.duration || '',
                 signal_ts: Number(task.signal_ts || 0),
@@ -1768,6 +1805,7 @@
             const safeToolName = escapeHtml(t.tool);
             const safeInfo = escapeHtml(info);
             const safeSource = escapeHtml(source);
+            const safeMode = escapeHtml(getModeText(t));
             const showRefresh = !!t.can_refresh;
             return `
         <div class="task-card ${cls}" style="--stagger-index:${index};" data-testid="task-card" data-log-file="${safeLogFile}" data-task-key="${escapeHtml(taskKey)}" onclick="openTask('${safeLogFile}')">
@@ -1775,6 +1813,7 @@
           <div class="card-body">
             <div class="card-title-row">
               <div class="tool-name">${safeToolName}</div>
+              ${safeMode ? `<div class="card-mode">${safeMode}</div>` : ''}
               ${source ? `<div class="card-source" title="${safeSource}">${safeSource}</div>` : ''}
             </div>
             ${info ? `<div class="card-info" title="${safeInfo}">${safeInfo}</div>` : ''}
@@ -1896,12 +1935,26 @@
             } catch (e) { }
         }
 
+        function hasPywebviewApi() {
+            return !!(
+                window.pywebview &&
+                window.pywebview.api &&
+                typeof window.pywebview.api.get_tasks === 'function'
+            );
+        }
+
         async function refresh() {
+            if (!hasPywebviewApi()) return false;
             try {
                 const tasks = await pywebview.api.get_tasks();
                 renderTasks(tasks);
                 dismissLaunchSplash();
-            } catch (e) { console.error('刷新失败:', e); }
+                return true;
+            } catch (e) {
+                console.error('刷新失败:', e);
+                renderTasks([]);
+                return false;
+            }
         }
 
         function upsertTask(task) {
@@ -1931,6 +1984,10 @@
         }
 
         async function loadSettings() {
+            if (!hasPywebviewApi()) {
+                applyI18nStaticTexts();
+                return;
+            }
             try {
                 const settings = await pywebview.api.get_settings();
                 setLanguageState(settings && settings.language);
@@ -1942,6 +1999,27 @@
                 setLanguageState(currentLanguage);
             }
             applyI18nStaticTexts();
+        }
+
+        async function bootstrapPywebview(reason = 'unknown') {
+            if (bridgeBootstrapDone || bridgeBootstrapStarted) return;
+            if (!hasPywebviewApi()) return;
+            bridgeBootstrapStarted = true;
+            try {
+                await loadSettings();
+                const refreshed = await refresh();
+                if (!refreshed) {
+                    throw new Error('refresh_failed');
+                }
+                bridgeBootstrapDone = true;
+                if (bridgePollHandle) {
+                    clearInterval(bridgePollHandle);
+                    bridgePollHandle = null;
+                }
+            } catch (e) {
+                console.error(`初始化失败 (${reason}):`, e);
+                bridgeBootstrapStarted = false;
+            }
         }
 
         async function refreshClaudeCapabilities() {
@@ -2056,6 +2134,22 @@
             } catch (e) { }
         }
 
+        async function launchCodex() {
+            if (!hasPywebviewApi()) return;
+            try {
+                await pywebview.api.launch_codex();
+                setTimeout(() => refresh(), 700);
+            } catch (e) { console.error('启动 Codex 失败:', e); }
+        }
+
+        async function launchCodexMonitored() {
+            if (!hasPywebviewApi()) return;
+            try {
+                await pywebview.api.launch_codex_monitored();
+                setTimeout(() => refresh(), 700);
+            } catch (e) { console.error('启动 Codex Monitored 失败:', e); }
+        }
+
         async function quit() {
             try { await pywebview.api.quit_app(); } catch (e) { }
         }
@@ -2126,11 +2220,24 @@
         setLanguageState(currentLanguage);
         applyI18nStaticTexts();
         initTheme();
-        setTimeout(() => dismissLaunchSplash(true), LAUNCH_SPLASH_FALLBACK_MS);
+        setTimeout(() => {
+            if (!bridgeBootstrapDone) {
+                renderTasks([]);
+            }
+            dismissLaunchSplash(true);
+        }, LAUNCH_SPLASH_FALLBACK_MS);
         window.addEventListener('pywebviewready', async () => {
-            await loadSettings();
-            await refresh();
+            await bootstrapPywebview('pywebviewready');
         });
+        void bootstrapPywebview('immediate');
+        bridgePollHandle = setInterval(() => {
+            if (bridgeBootstrapDone) {
+                clearInterval(bridgePollHandle);
+                bridgePollHandle = null;
+                return;
+            }
+            void bootstrapPywebview('poll');
+        }, 150);
     </script>
 
 </body>

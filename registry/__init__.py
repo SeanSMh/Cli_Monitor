@@ -1,0 +1,2 @@
+"""Session registry helpers."""
+

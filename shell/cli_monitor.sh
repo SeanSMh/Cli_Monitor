@@ -11,6 +11,19 @@
 # -------------------------------------------
 export AI_MONITOR_DIR="/tmp/ai_monitor_logs"
 mkdir -p "$AI_MONITOR_DIR"
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    _CLI_MONITOR_SOURCE_PATH="${BASH_SOURCE[0]}"
+elif [[ -n "${ZSH_VERSION:-}" ]]; then
+    _CLI_MONITOR_SOURCE_PATH="${(%):-%N}"
+else
+_CLI_MONITOR_SOURCE_PATH="$0"
+fi
+_CLI_MONITOR_SHELL_DIR="$(cd "$(dirname "${_CLI_MONITOR_SOURCE_PATH}")" && pwd)"
+unalias codex 2>/dev/null || true
+_CLI_MONITOR_ORIGINAL_CODEX_BIN="$(type -P codex 2>/dev/null || true)"
+if [[ -z "${_CLI_MONITOR_ORIGINAL_CODEX_BIN}" && -n "${ZSH_VERSION:-}" ]]; then
+    _CLI_MONITOR_ORIGINAL_CODEX_BIN="$(whence -p codex 2>/dev/null || true)"
+fi
 
 # 每次启动 Shell 时清理超过 1 天的旧日志
 find "$AI_MONITOR_DIR" -name "*.log" -mtime +1 -delete 2>/dev/null
@@ -39,10 +52,19 @@ function _ai_meta_sanitize() {
 function ai_wrapper() {
     local tool_name=$1
     shift # 移除工具名，保留后续参数
+    ai_wrapper_cmd "$tool_name" "$tool_name" "$@"
+}
+
+function ai_wrapper_cmd() {
+    local tool_name=$1
+    shift
+    local real_cmd=$1
+    shift
 
     # 生成唯一会话 ID: 工具名_时间戳_PID_随机后缀
     local session_id="${tool_name}_$(date +%s)_$$_${RANDOM}"
     local log_file="$AI_MONITOR_DIR/${session_id}.log"
+    local _launch_token="$(_ai_meta_sanitize "${CLI_MONITOR_LAUNCH_TOKEN:-}")"
 
     # 写入起始标记 (供监控层解析)
     echo "--- MONITOR_START: $tool_name | $(date '+%Y-%m-%d %H:%M:%S') ---" > "$log_file"
@@ -88,14 +110,22 @@ function ai_wrapper() {
     echo "--- MONITOR_META jetbrains_ide_name: ${_jetbrains_ide_name} ---" >> "$log_file"
     echo "--- MONITOR_META jetbrains_ide_product: ${_jetbrains_ide_product} ---" >> "$log_file"
     echo "--- MONITOR_META android_studio_version: ${_android_studio_version} ---" >> "$log_file"
+    if [[ -n "${_launch_token}" ]]; then
+        echo "--- MONITOR_META launch_token: ${_launch_token} ---" >> "$log_file"
+    fi
+    if [[ "$tool_name" == "codex" ]]; then
+        echo "--- MONITOR_META state_source: codex_weak ---" >> "$log_file"
+    fi
 
     # 根据平台选择正确的 script 命令参数
     if [[ "$_CLI_MONITOR_PLATFORM" == "macos" ]]; then
         # macOS (BSD script): -a 追加模式, -F 实时刷新, -q 静默
-        CLI_MONITOR_SESSION_ID="$session_id" CLI_MONITOR_LOG_FILE="$log_file" script -a -F -q "$log_file" "$tool_name" "$@"
+        CLI_MONITOR_SESSION_ID="$session_id" CLI_MONITOR_LOG_FILE="$log_file" script -a -F -q "$log_file" "$real_cmd" "$@"
     else
         # Linux (GNU script): -a 追加模式, -f 实时刷新, -q 静默
-        CLI_MONITOR_SESSION_ID="$session_id" CLI_MONITOR_LOG_FILE="$log_file" script -a -f -q -c "$tool_name $*" "$log_file"
+        local cmd_str
+        printf -v cmd_str '%q ' "$real_cmd" "$@"
+        CLI_MONITOR_SESSION_ID="$session_id" CLI_MONITOR_LOG_FILE="$log_file" script -a -f -q -c "${cmd_str% }" "$log_file"
     fi
 
     local exit_code=$?
@@ -104,6 +134,46 @@ function ai_wrapper() {
     echo "--- MONITOR_END: $exit_code | $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$log_file"
 
     return $exit_code
+}
+
+function _resolve_codex_bin() {
+    local configured_bin="${CLI_MONITOR_CODEX_BIN:-}"
+    if [[ -n "${configured_bin}" && -x "${configured_bin}" ]]; then
+        echo "${configured_bin}"
+        return 0
+    fi
+
+    if [[ -n "${_CLI_MONITOR_ORIGINAL_CODEX_BIN:-}" && -x "${_CLI_MONITOR_ORIGINAL_CODEX_BIN}" ]]; then
+        echo "${_CLI_MONITOR_ORIGINAL_CODEX_BIN}"
+        return 0
+    fi
+
+    local discovered_bin
+    discovered_bin="$(type -P codex 2>/dev/null || true)"
+    if [[ -z "${discovered_bin}" && -n "${ZSH_VERSION:-}" ]]; then
+        discovered_bin="$(whence -p codex 2>/dev/null || true)"
+    fi
+    if [[ -n "${discovered_bin}" && -x "${discovered_bin}" ]]; then
+        echo "${discovered_bin}"
+        return 0
+    fi
+
+    local app_bundle_bin="/Applications/Codex.app/Contents/Resources/codex"
+    if [[ -x "${app_bundle_bin}" ]]; then
+        echo "${app_bundle_bin}"
+        return 0
+    fi
+
+    return 1
+}
+
+function codex() {
+    local codex_bin
+    codex_bin="$(_resolve_codex_bin)" || {
+        echo "codex binary not found" >&2
+        return 127
+    }
+    ai_wrapper_cmd "codex" "${codex_bin}" "$@"
 }
 
 # -------------------------------------------
@@ -144,7 +214,7 @@ function ai_monitor_list() {
 # 5. 注册默认别名
 # -------------------------------------------
 alias claude="ai_wrapper claude"
-alias codex="ai_wrapper codex"
+alias codex-monitored="${_CLI_MONITOR_SHELL_DIR}/codex_launcher.sh"
 alias gemini="ai_wrapper gemini"
 alias gradle="ai_wrapper gradle"
 alias mvn="ai_wrapper mvn"

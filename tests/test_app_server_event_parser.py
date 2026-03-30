@@ -37,6 +37,12 @@ class AppServerEventParserTests(unittest.TestCase):
         self.assertEqual(status, "IDLE")
         self.assertEqual(msg, "AI 已完成回复")
 
+    def test_item_completed_does_not_map_to_idle(self):
+        lines = ['{"jsonrpc":"2.0","method":"item/completed","params":{"message":"partial done"}}\n']
+        status, msg = parse_app_server_status(lines) or ("", "")
+        self.assertEqual(status, "RUNNING")
+        self.assertIn("partial done", msg)
+
     def test_detects_running_plan_update(self):
         lines = [
             '{"jsonrpc":"2.0","method":"turn/plan/updated","params":{"summary":"Planning migration steps"}}\n'

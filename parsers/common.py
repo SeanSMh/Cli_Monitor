@@ -10,7 +10,7 @@ from typing import Any
 
 WAITING_MENU_RE = re.compile(r"^\s*(?:[❯›>•*\-]\s*)?\d+[.)]\s+\S+")
 WAITING_QUESTION_RE = re.compile(
-    r"(?:do you want to|would you like to|confirm\b|choose\b|select\b|save file to continue|press enter|apply changes\?)",
+    r"(?:do you want to|would you like to|confirm\b|choose\b|select\b|save file to continue|press enter|apply changes\?|needs your approval)",
     re.IGNORECASE,
 )
 WAITING_CONFIRM_LINE_RE = re.compile(
@@ -46,6 +46,27 @@ DEFAULT_NON_TEXT_KEYS = {
     "method",
     "jsonrpc",
     "id",
+    "threadid",
+    "thread_id",
+    "turnid",
+    "turn_id",
+    "itemid",
+    "item_id",
+    "callid",
+    "call_id",
+    "approvalid",
+    "approval_id",
+    "modelprovider",
+    "model_provider",
+    "source",
+    "cliversion",
+    "cli_version",
+    "cwd",
+    "path",
+    "createdat",
+    "created_at",
+    "updatedat",
+    "updated_at",
 }
 
 

@@ -49,7 +49,7 @@ class PanelSemanticWaitingTests(unittest.TestCase):
         self.assertEqual(message, "Do you want to proceed?")
         self.assertIn(log_file, api._semantic_waiting_cache)
 
-    def test_semantic_waiting_releases_on_meaningful_running_message(self):
+    def test_semantic_waiting_does_not_override_codex_status(self):
         api = panel_app.Api()
         log_file = "/tmp/ai_monitor_logs/codex_test_semantic.log"
         api._semantic_waiting_cache[log_file] = {
@@ -65,7 +65,7 @@ class PanelSemanticWaitingTests(unittest.TestCase):
 
         self.assertEqual(status, "RUNNING")
         self.assertEqual(message, "Thinking")
-        self.assertNotIn(log_file, api._semantic_waiting_cache)
+        self.assertIn(log_file, api._semantic_waiting_cache)
 
     def test_semantic_waiting_updates_message_when_new_prompt_detected(self):
         api = panel_app.Api()
@@ -118,7 +118,7 @@ class PanelSemanticWaitingTests(unittest.TestCase):
         self.assertEqual(message, "运行中...")
         self.assertNotIn(log_file, api._semantic_waiting_cache)
 
-    def test_semantic_idle_holds_codex_on_unchanged_effective_tail(self):
+    def test_semantic_idle_does_not_override_codex_status(self):
         api = panel_app.Api()
         log_file = "/tmp/ai_monitor_logs/codex_test_semantic_idle.log"
         api._semantic_idle_cache[log_file] = {
@@ -139,10 +139,10 @@ class PanelSemanticWaitingTests(unittest.TestCase):
                 log_file, "codex", "RUNNING", "Final answer line"
             )
 
-        self.assertEqual(status, "IDLE")
-        self.assertEqual(message, "等待输入")
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(message, "Final answer line")
 
-    def test_semantic_idle_releases_codex_when_new_output_arrives(self):
+    def test_semantic_idle_keeps_codex_cache_untouched(self):
         api = panel_app.Api()
         log_file = "/tmp/ai_monitor_logs/codex_test_semantic_idle_release.log"
         api._semantic_idle_cache[log_file] = {
@@ -165,7 +165,7 @@ class PanelSemanticWaitingTests(unittest.TestCase):
 
         self.assertEqual(status, "RUNNING")
         self.assertEqual(message, "Thinking about next step")
-        self.assertNotIn(log_file, api._semantic_idle_cache)
+        self.assertIn(log_file, api._semantic_idle_cache)
 
 
 if __name__ == "__main__":

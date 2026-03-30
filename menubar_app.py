@@ -22,12 +22,17 @@ import subprocess
 
 import rumps
 
-# 将项目目录加入路径，复用 monitor.py 的核心逻辑
-# PyInstaller 打包后 __file__ 指向临时目录，需要用 sys._MEIPASS
-if getattr(sys, 'frozen', False):
-    SCRIPT_DIR = sys._MEIPASS
-else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# 将项目目录加入路径，复用 monitor.py 的核心逻辑。
+# 打包后优先使用 bundle 资源目录；兼容 PyInstaller 和 py2app。
+def _resolve_script_dir() -> str:
+    if getattr(sys, "frozen", False):
+        bundled_dir = getattr(sys, "_MEIPASS", "") or os.environ.get("RESOURCEPATH", "")
+        if bundled_dir:
+            return os.path.abspath(bundled_dir)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+SCRIPT_DIR = _resolve_script_dir()
 sys.path.insert(0, SCRIPT_DIR)
 
 from monitor import (

@@ -71,6 +71,26 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "WAITING")
         self.assertIn("(y/n)", msg)
 
+    def test_analyze_log_reads_codex_state_from_monitord_first(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(log, "codex", ["running...\n"])
+        with mock.patch.object(
+            self.monitor,
+            "get_monitord_session",
+            return_value={
+                "task": {
+                    "tool": "codex",
+                    "status": "WAITING_APPROVAL",
+                    "message": "server needs your approval.",
+                    "updated_at_ms": 123456,
+                }
+            },
+        ):
+            _, status, msg, _, _, signal_ts = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING_APPROVAL")
+        self.assertIn("approval", msg)
+        self.assertGreater(signal_ts, 0)
+
     def test_analyze_log_gradle_done_pattern_to_idle(self):
         log = self.tmp_path / "logs" / "gradle_1_2_3.log"
         _write_log(log, "gradle", ["BUILD SUCCESSFUL in 1s\n"])
@@ -392,6 +412,38 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "IDLE")
         self.assertEqual(msg, "AI 已完成回复")
 
+    def test_analyze_log_codex_proxy_backed_session_skips_rate_idle_text_fallback(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            ["running...\n"],
+            meta={"state_source": "codex_proxy", "proxy_url": "ws://127.0.0.1:51589"},
+        )
+
+        with mock.patch.object(
+            self.monitor,
+            "track_file_rate",
+            return_value=(True, True, 2),
+        ):
+            _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+
+        self.assertEqual(status, "RUNNING")
+        self.assertEqual(msg, "running...")
+
+    def test_analyze_log_codex_proxy_backed_session_keeps_explicit_waiting_prompt(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            ["Apply changes? (y/n)\n"],
+            meta={"state_source": "codex_proxy", "proxy_url": "ws://127.0.0.1:51589"},
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "WAITING")
+        self.assertIn("(y/n)", msg)
+
     def test_analyze_log_running_strips_ansi_and_control_chars(self):
         log = self.tmp_path / "logs" / "npm_1_2_3.log"
         _write_log(log, "npm", ["\x1b[31mHello\x1b[0m\x00world\n"])
@@ -414,6 +466,8 @@ class AnalyzeLogTests(unittest.TestCase):
                 "cwd": "/tmp/work",
                 "shell_pid": "4567",
                 "wezterm_pane_id": "42",
+                "state_source": "codex_proxy",
+                "proxy_url": "ws://127.0.0.1:51589",
             },
         )
 
@@ -423,6 +477,8 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(meta["cwd"], "/tmp/work")
         self.assertEqual(meta["shell_pid"], "4567")
         self.assertEqual(meta["wezterm_pane_id"], "42")
+        self.assertEqual(meta["state_source"], "codex_proxy")
+        self.assertEqual(meta["proxy_url"], "ws://127.0.0.1:51589")
 
     def test_parse_session_meta_fallback_pid_from_filename(self):
         log = self.tmp_path / "logs" / "codex_1739450000_7654_11.log"
@@ -667,6 +723,21 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(status, "IDLE")
         self.assertEqual(msg, "AI 已完成回复")
 
+    def test_analyze_log_proxy_backed_codex_skips_legacy_compat_completed_event(self):
+        log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            log,
+            "codex",
+            [
+                '{"type":"turn.completed","message":"turn finished"}\n',
+            ],
+            meta={"state_source": "codex_proxy", "proxy_url": "ws://127.0.0.1:51589"},
+        )
+
+        _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
+        self.assertEqual(status, "RUNNING")
+        self.assertIn("turn.completed", msg)
+
     def test_analyze_log_uses_app_server_waiting_event(self):
         log = self.tmp_path / "logs" / "codex_1_2_3.log"
         _write_log(
@@ -678,7 +749,7 @@ class AnalyzeLogTests(unittest.TestCase):
         )
 
         _, status, msg, _, _, _ = self.monitor.analyze_log(str(log))
-        self.assertEqual(status, "WAITING")
+        self.assertEqual(status, "WAITING_INPUT")
         self.assertIn("Save file to continue", msg)
 
     def test_analyze_log_records_official_parse_stats(self):
@@ -699,6 +770,41 @@ class AnalyzeLogTests(unittest.TestCase):
         self.assertEqual(stats["compat_hit_count"], 0)
         self.assertEqual(stats["text_hit_count"], 0)
         self.assertEqual(stats["last_source"], "official")
+        self.assertEqual(stats["proxy_backed_sample_count"], 0)
+        self.assertEqual(stats["legacy_sample_count"], 1)
+        self.assertEqual(stats["legacy_fallback_hit_count"], 0)
+        self.assertEqual(stats["fallback_rate"], 0.0)
+
+    def test_codex_parse_stats_fallback_rate_only_counts_legacy_fallbacks(self):
+        legacy_log = self.tmp_path / "logs" / "codex_1_2_3.log"
+        _write_log(
+            legacy_log,
+            "codex",
+            [
+                '{"type":"turn.completed","message":"turn finished"}\n',
+            ],
+        )
+        _, status, _, _, _, _ = self.monitor.analyze_log(str(legacy_log))
+        self.assertEqual(status, "IDLE")
+
+        proxy_log = self.tmp_path / "logs" / "codex_1_2_4.log"
+        _write_log(
+            proxy_log,
+            "codex",
+            ["Apply changes? (y/n)\n"],
+            meta={"state_source": "codex_proxy", "proxy_url": "ws://127.0.0.1:51589"},
+        )
+        _, status, _, _, _, _ = self.monitor.analyze_log(str(proxy_log))
+        self.assertEqual(status, "WAITING")
+
+        stats = self.monitor.get_codex_parse_stats()
+        self.assertEqual(stats["compat_hit_count"], 1)
+        self.assertEqual(stats["text_hit_count"], 1)
+        self.assertEqual(stats["legacy_sample_count"], 1)
+        self.assertEqual(stats["proxy_backed_sample_count"], 1)
+        self.assertEqual(stats["legacy_fallback_hit_count"], 1)
+        self.assertEqual(stats["fallback_rate"], 1.0)
+        self.assertEqual(stats["overall_fallback_rate"], 1.0)
 
 
 if __name__ == "__main__":
