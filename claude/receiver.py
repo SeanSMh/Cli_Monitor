@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import http.client
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,6 +33,7 @@ def map_hook_event(hook_event_name: str) -> str | None:
 
 
 def build_event_payload(hook_json: dict[str, Any]) -> dict[str, Any] | None:
+    """Build daemon event payload from Claude hook JSON; returns None for skipped events."""
     hook_event_name = str(hook_json.get("hook_event_name", "") or "")
     status = map_hook_event(hook_event_name)
     if status is None:
@@ -59,7 +61,7 @@ def _post_to_daemon(payload: dict[str, Any]) -> None:
     try:
         with urllib.request.urlopen(req, timeout=0.15) as resp:
             resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
         pass  # daemon not running — silent fallback
 
 
