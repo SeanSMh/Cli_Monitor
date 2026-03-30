@@ -18,7 +18,7 @@ from itertools import islice
 from collections import defaultdict
 from threading import Timer, Lock
 from config_loader import config
-from daemon_client import get_session as get_monitord_session
+from daemon_client import get_session as get_monitord_session, get_state as get_daemon_state
 from app_server_event_parser import parse_app_server_status
 from codex_event_parser import parse_codex_structured_status
 from parsers.codex_official_schema import parse_codex_official_status
@@ -29,6 +29,20 @@ try:
     WATCHDOG_AVAILABLE = True
 except ImportError:
     WATCHDOG_AVAILABLE = False
+
+from dataclasses import dataclass, field as dc_field
+
+@dataclass
+class DisplayTask:
+    tool_name: str
+    status: str
+    message: str
+    exit_code: int = -1
+    duration: str = ""
+    signal_ts: int = 0
+    session_id: str = ""
+    rate_limit_reset_at: str | None = None
+    subagents: list = dc_field(default_factory=list)
 
 
 # === 配置初始化 ===
@@ -827,18 +841,19 @@ def _get_tool_rules(tool_name):
 
 
 def _return_status(
-    tool_name,
-    status,
-    message,
-    exit_code=-1,
-    duration="",
-    signal_ts=0,
-    codex_source="",
-    codex_proxy_backed=False,
-):
-    if tool_name == "codex" and codex_source:
-        _record_codex_parse_hit(codex_source, proxy_backed=bool(codex_proxy_backed))
-    return tool_name, status, message, exit_code, duration, signal_ts
+    tool_name, status, message, exit_code, duration, signal_ts,
+    codex_source=None, codex_proxy_backed=False
+) -> DisplayTask:
+    if tool_name == "codex":
+        _record_codex_parse_hit(codex_source or "text", proxy_backed=codex_proxy_backed)
+    return DisplayTask(
+        tool_name=tool_name,
+        status=status,
+        message=message,
+        exit_code=exit_code,
+        duration=duration,
+        signal_ts=signal_ts,
+    )
 
 
 def _normalize_running_status_message(status: str, message: str, last_line: str) -> str:
@@ -914,7 +929,7 @@ def _analyze_codex_structured_status(
 
 def analyze_log(filepath):
     """
-    Returns: (tool_name, status, message, exit_code, duration, signal_ts)
+    Returns: DisplayTask
     Modified to include tool_name in return for cache efficiency
     """
     lines = tail_read(filepath)
@@ -922,7 +937,7 @@ def analyze_log(filepath):
     tool_name, start_time = parse_start_info(filepath)
     codex_proxy_backed = tool_name == "codex" and _is_proxy_backed_codex_session(filepath)
     if not lines:
-        return tool_name, "RUNNING", "初始化...", -1, "", 0
+        return DisplayTask(tool_name=tool_name, status="RUNNING", message="初始化...")
 
     tool_rules = _get_tool_rules(tool_name) or {}
 
@@ -1176,16 +1191,34 @@ class MonitorCore:
         self.debounce_ms = 0.1 
 
     def _analyze_all(self):
-        """全量扫描"""
+        """全量扫描 + 合并 daemon 中的 Claude 任务"""
         log_files = glob.glob(os.path.join(self.log_dir, "*.log"))
         log_files.sort(key=os.path.getmtime, reverse=True)
         active_files = log_files[:self.max_tasks]
-        
-        results = []
+
+        results: list[DisplayTask] = []
         for f in active_files:
-            # tool_name, status, msg, exit_code, duration, signal_ts
             results.append(analyze_log(f))
-            
+
+        # Merge Claude sessions from daemon (higher priority, no log file needed)
+        daemon_resp = get_daemon_state("claude")
+        if daemon_resp and isinstance(daemon_resp.get("tasks"), list):
+            seen_session_ids = {t.session_id for t in results if t.session_id}
+            for task_dict in daemon_resp["tasks"]:
+                sid = str(task_dict.get("session_id", "") or "")
+                if not sid or sid in seen_session_ids:
+                    continue
+                status_raw = str(task_dict.get("status", "") or "").upper()
+                results.insert(0, DisplayTask(
+                    tool_name="claude",
+                    status=status_raw,
+                    message=str(task_dict.get("message", "") or ""),
+                    session_id=sid,
+                    rate_limit_reset_at=task_dict.get("rate_limit_reset_at"),
+                    subagents=[],
+                ))
+
+        results = results[:self.max_tasks]
         with self.lock:
             if results != self.tasks_cache:
                 self.tasks_cache = results
@@ -1226,8 +1259,11 @@ class MonitorCore:
         else:
             has_waiting = False
             for t in tasks:
-                # Unpack: tool_name, status, msg, exit_code, duration, signal_ts
-                tool_name, status, msg, exit_code, duration, _ = t
+                tool_name = t.tool_name
+                status = t.status
+                msg = t.message
+                exit_code = t.exit_code
+                duration = t.duration
                 
                 if status in WAITING_STATES:
                     has_waiting = True
@@ -1235,7 +1271,9 @@ class MonitorCore:
                 status_str = format_status(status, exit_code)
                 duration_str = duration if duration else "—"
                 
-                if len(msg) > 24:
+                if status == "RATE_LIMITED" and t.rate_limit_reset_at:
+                    msg = format_rate_limit_countdown(t.rate_limit_reset_at)
+                elif len(msg) > 24:
                     msg = msg[:21] + "..."
                 msg = re.sub(r'\033\[[0-9;]*m', '', msg)
                 msg = re.sub(r'[\x00-\x1f\x7f]', '', msg)
@@ -1276,12 +1314,29 @@ def format_status(status, exit_code=-1):
     if status == "WAITING_INPUT": return f"{CYAN}🔵 待输入{RESET}"
     if status == "IDLE": return f"{CYAN}🔵 等待输入{RESET}"
     if status == "RUNNING": return f"{GREEN}🟢 运行中{RESET}"
+    if status == "RATE_LIMITED": return f"{BLINK}{GRAY}🔴 限速中{RESET}"
     if status == "ERROR": return f"{GRAY}🔴 异常{RESET}"
     else:
         if exit_code == 0: return f"{GRAY}⚪ 已完成{RESET}"
         elif exit_code == 137: return f"{GRAY}⚪ 已关闭{RESET}"
         elif exit_code > 0: return f"{GRAY}🔴 异常退出({exit_code}){RESET}"
         else: return f"{GRAY}⚪ 已结束{RESET}"
+
+
+def format_rate_limit_countdown(reset_at_iso: str | None) -> str:
+    if not reset_at_iso:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        reset = datetime.fromisoformat(reset_at_iso.replace("Z", "+00:00"))
+        remaining = reset - datetime.now(timezone.utc)
+        secs = max(0, int(remaining.total_seconds()))
+        if secs == 0:
+            return "解除中..."
+        m, s = divmod(secs, 60)
+        return f"  {m}m{s:02d}s 后解除"
+    except Exception:
+        return ""
 
 
 def main():
