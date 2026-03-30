@@ -38,6 +38,13 @@ else
     echo "${YELLOW}  ⚠️  未找到已安装的配置${RESET}"
 fi
 
+# 1b. 移除 Claude Code statusCommand
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_PY="$SCRIPT_DIR/claude/install.py"
+if [[ -f "$INSTALL_PY" ]]; then
+    python3 "$INSTALL_PY" uninstall 2>/dev/null || true
+fi
+
 # 2. 清理日志目录
 LOG_DIR="/tmp/ai_monitor_logs"
 if [[ -d "$LOG_DIR" ]]; then

@@ -64,6 +64,12 @@ fi
     echo "$MARKER_END"
 } >> "$RC_FILE"
 
+# 5. 注入 Claude Code statusCommand
+RECEIVER_PATH="$SCRIPT_DIR/claude/receiver.py"
+if [[ -f "$RECEIVER_PATH" ]]; then
+    python3 "$SCRIPT_DIR/claude/install.py" install "$RECEIVER_PATH" 2>/dev/null || true
+fi
+
 echo "${GREEN}✅ 安装成功!${RESET}"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
