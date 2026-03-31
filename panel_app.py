@@ -436,15 +436,6 @@ _GENERIC_RUNNING_MESSAGES = {
     "初始化...",
     "Initializing...",
 }
-_claude_cli_capabilities = {
-    "claude_cli": "unsupported",
-    "remote_control": "unsupported",
-    "remote_control_account": "unknown",
-    "stream_json": "unsupported",
-    "remote_control_hint": "",
-}
-_claude_cli_capabilities_checked_at = 0
-_claude_cli_capabilities_lock = threading.Lock()
 
 
 def _codex_monitor_mode(tool_name, meta):
@@ -631,77 +622,6 @@ def _t(key, lang=None, **kwargs):
     return str(value)
 
 
-def _detect_claude_cli_capabilities():
-    caps = {
-        "claude_cli": "unsupported",
-        "remote_control": "unsupported",
-        "remote_control_account": "unknown",
-        "stream_json": "unsupported",
-        "remote_control_hint": "",
-    }
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        return caps
-    caps["claude_cli"] = "supported"
-
-    help_text = ""
-    try:
-        res = subprocess.run(
-            [claude_bin, "--help"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1.5,
-        )
-        help_text = " ".join([str(res.stdout or ""), str(res.stderr or "")]).lower()
-        if "--output-format" in help_text or "stream-json" in help_text:
-            caps["stream_json"] = "supported"
-    except Exception:
-        pass
-
-    remote_candidate = "remote-control" in help_text
-    if remote_candidate:
-        caps["remote_control"] = "supported"
-    try:
-        res = subprocess.run(
-            [claude_bin, "remote-control", "--help"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=1.5,
-        )
-        text = " ".join([str(res.stdout or ""), str(res.stderr or "")]).lower()
-        if "not enabled for your account" in text or "contact your administrator" in text:
-            # 能力本身存在，但当前账号未开通。
-            caps["remote_control"] = "supported"
-            caps["remote_control_account"] = "disabled"
-            caps["remote_control_hint"] = "account_disabled"
-        elif res.returncode == 0 or "remote-control" in text:
-            caps["remote_control"] = "supported"
-            caps["remote_control_account"] = "enabled"
-        elif not remote_candidate:
-            caps["remote_control"] = "unsupported"
-            caps["remote_control_account"] = "unknown"
-    except Exception:
-        if not remote_candidate:
-            caps["remote_control"] = "unsupported"
-            caps["remote_control_account"] = "unknown"
-    return caps
-
-
-def _refresh_claude_cli_capabilities():
-    global _claude_cli_capabilities, _claude_cli_capabilities_checked_at
-    caps = _detect_claude_cli_capabilities()
-    now_ts = int(time.time())
-    with _claude_cli_capabilities_lock:
-        _claude_cli_capabilities = dict(caps)
-        _claude_cli_capabilities_checked_at = now_ts
-    return dict(_claude_cli_capabilities), _claude_cli_capabilities_checked_at
-
-
-def _get_claude_cli_capabilities():
-    with _claude_cli_capabilities_lock:
-        return dict(_claude_cli_capabilities), int(_claude_cli_capabilities_checked_at or 0)
 
 
 # ===========================================
@@ -1794,12 +1714,9 @@ class Api:
 
     def get_settings(self):
         settings = get_app_settings()
-        caps, checked_at = _get_claude_cli_capabilities()
         return {
             "language": _normalize_language(settings.get("language")),
             "supported_languages": list(SUPPORTED_LANGUAGES),
-            "claude_capabilities": caps,
-            "claude_capabilities_checked_at": checked_at,
         }
 
     def set_language(self, lang):
@@ -1810,13 +1727,6 @@ class Api:
             "supported_languages": list(SUPPORTED_LANGUAGES),
         }
 
-    def refresh_claude_capabilities(self):
-        caps, checked_at = _refresh_claude_cli_capabilities()
-        return {
-            "ok": True,
-            "claude_capabilities": caps,
-            "claude_capabilities_checked_at": checked_at,
-        }
 
     def _build_task_for_log(self, log_file, lang):
         log_file = str(log_file or "").strip()
@@ -2535,15 +2445,12 @@ class Api:
     def debug_get_state(self):
         if not E2E_MODE:
             return {"enabled": False}
-        caps, checked_at = _get_claude_cli_capabilities()
         return {
             "enabled": True,
             "unread_notification_count": self._unread_notification_count,
             "last_focus_result": self._last_focus_result,
             "window_visible": bool(_window_visible),
             "codex_parse_stats": get_codex_parse_stats(),
-            "claude_cli_capabilities": caps,
-            "claude_cli_capabilities_checked_at": checked_at,
         }
 
     def debug_set_unread_count(self, count):
@@ -2681,8 +2588,6 @@ def main():
     os.makedirs(LOG_DIR, exist_ok=True)
     cleanup_stale_logs()  # <--- 启动时清理
 
-    caps, checked_at = _refresh_claude_cli_capabilities()
-    _log(f"claude capabilities: {caps} checked_at={checked_at}")
 
     if HAS_APPKIT:
         try:
