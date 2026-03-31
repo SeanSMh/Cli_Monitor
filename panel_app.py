@@ -2655,7 +2655,7 @@ def main():
         title="CLI Monitor",
         url=PANEL_HTML,
         js_api=api,
-        width=640,
+        width=900,
         height=460,
         resizable=True,
         on_top=False,

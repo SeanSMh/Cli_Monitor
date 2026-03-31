@@ -568,29 +568,30 @@
         }
 
         .btn-icon {
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
+            background: #ffffff;
+            border: 1px solid rgba(15, 23, 42, 0.08);
             color: var(--text-secondary);
-            width: 32px;
-            height: 32px;
-            border-radius: 8px;
+            width: 46px;
+            height: 46px;
+            border-radius: 14px;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 14px;
-            transition: all 0.2s;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.08);
+            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, color 0.18s ease, background-color 0.18s ease;
         }
 
         .btn-icon:hover {
             color: var(--text-primary);
-            background: var(--bg-card);
-            border-color: var(--border-card);
-            transform: scale(1.05);
+            border-color: rgba(37, 99, 235, 0.18);
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.06);
+            transform: translateY(-1px);
         }
 
         .btn-icon:active {
-            transform: scale(0.95);
+            transform: scale(0.97);
         }
 
         .btn-icon.spinning .refresh-icon,
@@ -598,9 +599,18 @@
             animation: refresh-spin 0.55s linear;
         }
 
+        .btn-icon svg,
+        .btn svg,
+        .card-action-icon svg {
+            width: 18px;
+            height: 18px;
+            display: block;
+        }
+
         .refresh-icon {
             display: inline-block;
             line-height: 1;
+            transform-origin: 50% 50%;
         }
 
         .settings-icon {
@@ -864,19 +874,19 @@
 
         /* ===== 任务卡片 ===== */
         .task-card {
-            height: 100px;
-            /* 固定高度 */
+            min-height: 116px;
             background: var(--bg-card);
-            border-radius: var(--radius);
-            padding: 10px 16px;
+            border-radius: 18px;
+            padding: 16px 18px 14px 18px;
             border: 1px solid var(--border-card);
             box-shadow: var(--shadow-card);
             transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
             overflow: hidden;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            display: grid;
+            grid-template-columns: 28px minmax(0, 1fr);
+            column-gap: 16px;
+            align-items: stretch;
             cursor: pointer;
             user-select: none;
         }
@@ -1045,30 +1055,36 @@
             }
         }
 
+        .card-dot-column {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .card-body {
-            flex: 1;
-            min-width: 0;
             display: flex;
             flex-direction: column;
-            justify-content: center;
             gap: 14px;
+            min-width: 0;
         }
 
         .card-title-row {
             display: flex;
             align-items: center;
             justify-content: flex-start;
-            gap: 6px;
+            gap: 10px;
             min-width: 0;
+            flex-wrap: wrap;
         }
 
         .tool-name {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 18px;
+            font-weight: 700;
             min-width: 0;
             flex: 0 1 auto;
-            max-width: 50%;
+            max-width: 100%;
+            line-height: 1;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -1079,35 +1095,72 @@
         }
 
         .card-mode {
-            font-size: 10px;
+            font-size: 11px;
             line-height: 1;
-            padding: 4px 7px;
+            padding: 8px 12px;
             border-radius: 999px;
-            border: 1px solid var(--border-subtle);
-            background: var(--bg-secondary);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: #ffffff;
             color: var(--text-secondary);
             white-space: nowrap;
             flex: 0 0 auto;
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
         }
 
         .card-source {
-            font-size: 10px;
+            font-size: 11px;
             line-height: 1;
-            padding: 4px 7px;
+            padding: 8px 12px;
             border-radius: 999px;
-            border: 1px solid var(--border-subtle);
-            background: var(--bg-elevated);
-            color: var(--text-tertiary);
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            background: #ffffff;
+            color: var(--text-secondary);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 54%;
+            max-width: 160px;
             flex: 0 1 auto;
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+        }
+
+        .card-status-row {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 14px;
+            min-height: 34px;
+        }
+
+        .status-dot-wrap {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            background: rgba(37, 99, 235, 0.08);
+            flex-shrink: 0;
+        }
+
+        .card-info-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .card-info-prefix {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 15px;
+            line-height: 1;
+            font-weight: 700;
+            color: var(--blue);
+            flex-shrink: 0;
         }
 
         .card-info {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
+            font-size: 14px;
             line-height: 1.25;
             color: var(--text-tertiary);
             margin-top: 0;
@@ -1119,17 +1172,23 @@
         .card-right {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 10px;
             flex-shrink: 0;
+            margin-left: auto;
         }
 
         .card-badge {
-            font-size: 10px;
-            font-weight: 600;
-            padding: 3px 6px;
-            border-radius: 6px;
-            letter-spacing: 0.3px;
+            font-size: 11px;
+            font-weight: 700;
+            min-width: 112px;
+            height: 34px;
+            padding: 0 14px;
+            border-radius: 12px;
+            letter-spacing: 0.02em;
             white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .card-badge.running {
@@ -1158,18 +1217,18 @@
         }
 
         .card-action-btn {
-            width: 22px;
-            height: 22px;
-            border-radius: 5px;
-            border: none;
+            width: 34px;
+            height: 34px;
+            border-radius: 12px;
+            border: 1px solid transparent;
             background: transparent;
             color: var(--text-tertiary);
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
-            opacity: 0.4;
-            transition: all 0.2s;
+            opacity: 0.86;
+            transition: all 0.18s ease;
             flex-shrink: 0;
             padding: 0;
             line-height: 1;
@@ -1177,12 +1236,18 @@
 
         .btn-card-refresh {
             font-size: 12px;
-            opacity: 0.45;
+            background: #ffffff;
+            border-color: rgba(15, 23, 42, 0.08);
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+        }
+
+        .card-info-row:empty {
+            display: none;
         }
 
         .card-action-icon {
-            width: 12px;
-            height: 12px;
+            width: 14px;
+            height: 14px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -1191,17 +1256,17 @@
         }
 
         .btn-card-refresh .refresh-icon {
-            font-size: 12px;
             transform-origin: 50% 50%;
         }
 
         .task-card:hover .btn-card-refresh {
-            opacity: 0.8;
+            opacity: 1;
         }
 
         .btn-card-refresh:hover:not(:disabled) {
             background: var(--blue-bg);
             color: var(--blue);
+            border-color: var(--blue-border);
             opacity: 1;
         }
 
@@ -1218,6 +1283,8 @@
 
         .btn-delete {
             font-size: 12px;
+            background: #fff4f4;
+            border-color: rgba(225, 29, 72, 0.08);
         }
 
         .btn-delete .delete-icon {
@@ -1227,12 +1294,13 @@
         }
 
         .task-card:hover .btn-delete {
-            opacity: 0.8;
+            opacity: 1;
         }
 
         .btn-delete:hover {
             background: var(--rose-bg);
             color: var(--rose);
+            border-color: var(--rose-border);
             opacity: 1;
         }
 
@@ -1283,38 +1351,43 @@
 
         .footer-left {
             display: flex;
-            gap: 6px;
+            gap: 10px;
         }
 
         .btn {
-            background: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
+            background: #ffffff;
+            border: 1px solid rgba(15, 23, 42, 0.08);
             color: var(--text-secondary);
-            font-size: 11px;
-            font-weight: 500;
+            font-size: 12px;
+            font-weight: 700;
             font-family: 'Inter', sans-serif;
-            padding: 5px 12px;
-            border-radius: 8px;
+            min-height: 44px;
+            padding: 0 18px;
+            border-radius: 14px;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.18s ease;
             display: flex;
             align-items: center;
             gap: 5px;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05), 0 1px 2px rgba(15, 23, 42, 0.08);
         }
 
         .btn:hover {
-            background: var(--bg-card);
+            background: #ffffff;
             color: var(--text-primary);
-            border-color: var(--border-card);
+            border-color: rgba(37, 99, 235, 0.18);
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.06);
+            transform: translateY(-1px);
         }
 
         .btn:active {
-            transform: scale(0.96);
+            transform: scale(0.97);
         }
 
         .btn.quit {
             color: var(--rose);
             border-color: var(--rose-border);
+            background: #fff9f9;
         }
 
         .btn.quit:hover {
@@ -1323,8 +1396,8 @@
         }
 
         .btn.icon-only {
-            width: 32px;
-            height: 32px;
+            width: 44px;
+            height: 44px;
             padding: 0;
             justify-content: center;
             gap: 0;
@@ -1353,7 +1426,14 @@
         </div>
         <div class="header-actions">
             <button class="btn-icon" onclick="toggleTheme(event)" title="切换主题" id="themeBtn" data-testid="theme-btn">☀️</button>
-            <button class="btn-icon" onclick="manualRefresh()" title="刷新" id="refreshBtn" data-testid="refresh-btn"><span class="refresh-icon">↻</span></button>
+            <button class="btn-icon" onclick="manualRefresh()" title="刷新" id="refreshBtn" data-testid="refresh-btn">
+                <span class="refresh-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 3v5h-5"></path>
+                        <path d="M20.49 8A9 9 0 1 0 21 12"></path>
+                    </svg>
+                </span>
+            </button>
             <button class="btn-icon" onclick="toggleSettings()" title="设置" id="settingsBtn" data-testid="settings-btn" aria-label="设置">
                 <svg class="settings-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <circle cx="12" cy="12" r="7.1"/>
@@ -1376,9 +1456,21 @@
         <div class="footer-left">
             <button class="btn" onclick="launchCodex()" id="openCodexBtn" data-testid="open-codex-btn">打开 Codex</button>
             <button class="btn" onclick="launchCodexMonitored()" id="openCodexMonitoredBtn" data-testid="open-codex-monitored-btn">打开 Codex Monitored</button>
-            <button class="btn icon-only" onclick="clearDone()" title="清除已完成" id="clearDoneBtn" data-testid="clear-done-btn">🗑</button>
+            <button class="btn icon-only" onclick="clearDone()" title="清除已完成" id="clearDoneBtn" data-testid="clear-done-btn" aria-label="清除已完成">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M8 6V4.8c0-.7.56-1.3 1.25-1.3h5.5c.69 0 1.25.6 1.25 1.3V6"></path>
+                    <path d="M18.5 6v12.2c0 .72-.58 1.3-1.3 1.3H6.8c-.72 0-1.3-.58-1.3-1.3V6"></path>
+                    <path d="M10 10.2v5.8M14 10.2v5.8"></path>
+                </svg>
+            </button>
         </div>
-        <button class="btn quit icon-only" onclick="quit()" title="退出" id="quitBtn" data-testid="quit-btn">⏻</button>
+        <button class="btn quit icon-only" onclick="quit()" title="退出" id="quitBtn" data-testid="quit-btn" aria-label="退出">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3v9"></path>
+                <path d="M7.05 5.8a8.5 8.5 0 1 0 9.9 0"></path>
+            </svg>
+        </button>
     </div>
 
     <div class="settings-overlay" id="settingsOverlay" data-testid="settings-overlay" onclick="if (event.target === this) closeSettings()">
@@ -1809,21 +1901,25 @@
             const showRefresh = !!t.can_refresh;
             return `
         <div class="task-card ${cls}" style="--stagger-index:${index};" data-testid="task-card" data-log-file="${safeLogFile}" data-task-key="${escapeHtml(taskKey)}" onclick="openTask('${safeLogFile}')">
-          <div class="status-dot ${cls}"></div>
+          <div class="card-dot-column">
+            <div class="status-dot-wrap"><div class="status-dot ${cls}"></div></div>
+          </div>
           <div class="card-body">
             <div class="card-title-row">
               <div class="tool-name">${safeToolName}</div>
               ${safeMode ? `<div class="card-mode">${safeMode}</div>` : ''}
               ${source ? `<div class="card-source" title="${safeSource}">${safeSource}</div>` : ''}
             </div>
-            ${info ? `<div class="card-info" title="${safeInfo}">${safeInfo}</div>` : ''}
-          </div>
-          <div class="card-right">
-            <span class="card-badge ${cls}">${getBadgeText(t)}</span>
-            ${showRefresh ? `<button class="card-action-btn btn-card-refresh" data-testid="refresh-task-btn" data-task-key="${escapeHtml(taskKey)}" onclick="event.stopPropagation(); refreshTask('${safeTaskKey}', this)"
-                    title="${tr('ui_btn_refresh_task')}"><span class="card-action-icon refresh-icon">↻</span></button>` : ''}
-            <button class="card-action-btn btn-delete" data-testid="delete-task-btn" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
-                    title="${tr('ui_btn_delete_task')}"><span class="card-action-icon delete-icon">×</span></button>
+            <div class="card-status-row">
+              <div class="card-right">
+                <span class="card-badge ${cls}">${getBadgeText(t)}</span>
+                ${showRefresh ? `<button class="card-action-btn btn-card-refresh" data-testid="refresh-task-btn" data-task-key="${escapeHtml(taskKey)}" onclick="event.stopPropagation(); refreshTask('${safeTaskKey}', this)"
+                        title="${tr('ui_btn_refresh_task')}"><span class="card-action-icon refresh-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3v5h-5"></path><path d="M20.49 8A9 9 0 1 0 21 12"></path></svg></span></button>` : ''}
+                <button class="card-action-btn btn-delete" data-testid="delete-task-btn" onclick="event.stopPropagation(); deleteTask('${safeLogFile}')"
+                        title="${tr('ui_btn_delete_task')}"><span class="card-action-icon delete-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg></span></button>
+              </div>
+            </div>
+            ${info ? `<div class="card-info-row"><span class="card-info-prefix">&gt;</span><div class="card-info" title="${safeInfo}">${safeInfo}</div></div>` : ''}
           </div>
         </div>`;
         }
@@ -1931,7 +2027,7 @@
                     bodyPadBottom +
                     WINDOW_FRAME_EXTRA;
                 const winH = Math.min(Math.max(targetH, MIN_WIN_H), MAX_WIN_H);
-                pywebview.api.resize_window(660, Math.round(winH));
+                pywebview.api.resize_window(900, Math.round(winH));
             } catch (e) { }
         }
 
