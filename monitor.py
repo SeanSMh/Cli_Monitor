@@ -14,6 +14,7 @@ import glob
 import re
 import json
 import argparse
+from datetime import datetime, timezone
 from itertools import islice
 from collections import defaultdict
 from threading import Timer, Lock
@@ -844,8 +845,8 @@ def _return_status(
     tool_name, status, message, exit_code, duration, signal_ts,
     codex_source=None, codex_proxy_backed=False
 ) -> DisplayTask:
-    if tool_name == "codex":
-        _record_codex_parse_hit(codex_source or "text", proxy_backed=codex_proxy_backed)
+    if tool_name == "codex" and codex_source:
+        _record_codex_parse_hit(codex_source, proxy_backed=codex_proxy_backed)
     return DisplayTask(
         tool_name=tool_name,
         status=status,
@@ -1182,7 +1183,7 @@ class MonitorCore:
         self.max_tasks = max_tasks
         self.enable_sound = enable_sound
         
-        self.tasks_cache = [] # List of task result tuples
+        self.tasks_cache = []  # List[DisplayTask]
         self.lock = Lock()
         self.needs_render = True
         self.timers = {}
@@ -1327,7 +1328,6 @@ def format_rate_limit_countdown(reset_at_iso: str | None) -> str:
     if not reset_at_iso:
         return ""
     try:
-        from datetime import datetime, timezone
         reset = datetime.fromisoformat(reset_at_iso.replace("Z", "+00:00"))
         remaining = reset - datetime.now(timezone.utc)
         secs = max(0, int(remaining.total_seconds()))
