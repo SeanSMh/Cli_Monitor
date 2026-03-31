@@ -1216,7 +1216,7 @@ class MonitorCore:
                     message=str(task_dict.get("message", "") or ""),
                     session_id=sid,
                     rate_limit_reset_at=task_dict.get("rate_limit_reset_at"),
-                    subagents=[],
+                    subagents=task_dict.get("subagents") or [],
                 ))
 
         results = results[:self.max_tasks]
@@ -1280,6 +1280,17 @@ class MonitorCore:
                 msg = re.sub(r'[\x00-\x1f\x7f]', '', msg)
 
                 print(f"{BOLD}{CYAN}║{RESET} {tool_name:<10} {status_str:<25} {duration_str:<10} {msg:<26}{BOLD}{CYAN}║{RESET}")
+
+                # Render subagents as indented tree rows
+                for sub in (t.subagents or []):
+                    if isinstance(sub, dict):
+                        sub_id_short = str(sub.get("subagent_id", "") or "")[:8]
+                        sub_status = str(sub.get("status", "") or "").upper()
+                    else:
+                        sub_id_short = str(getattr(sub, "subagent_id", "") or "")[:8]
+                        sub_status = str(getattr(sub, "status", "") or "").upper()
+                    sub_status_str = format_status(sub_status)
+                    print(f"{BOLD}{CYAN}║{RESET}    └─ {sub_id_short:<8} {sub_status_str:<22} {'':>10} {'':>26}{BOLD}{CYAN}║{RESET}")
 
             if has_waiting and self.enable_sound:
                 sys.stdout.write('\a')

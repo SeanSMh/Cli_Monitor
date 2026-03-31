@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from threading import RLock
 
 from engine.models import MonitorEvent, TaskState
@@ -31,6 +32,25 @@ class TaskStore:
     def get(self, session_id: str) -> TaskState | None:
         with self._lock:
             return self._states.get(session_id)
+
+    def apply_subagent_event(self, parent_session_id: str, subagent_id: str, status: str) -> None:
+        from engine.models import SubagentState
+        with self._lock:
+            parent = self._states.get(parent_session_id)
+            if parent is None:
+                return
+            now = time.time()
+            existing = next((s for s in parent.subagents if s.subagent_id == subagent_id), None)
+            if existing is None:
+                parent.subagents.append(SubagentState(
+                    subagent_id=subagent_id,
+                    status=status,
+                    started_at=now,
+                    last_active_at=now,
+                ))
+            else:
+                existing.status = status
+                existing.last_active_at = now
 
     def snapshot(self, tool_name: str = "") -> list[TaskState]:
         tool_key = str(tool_name or "").strip().lower()
