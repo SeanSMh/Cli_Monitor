@@ -18,10 +18,16 @@ echo "[build] spec: $SPEC_FILE"
 echo "[build] pyinstaller config dir: $PYI_CONFIG_DIR"
 
 cd "$ROOT_DIR"
+echo "[build] cleaning previous build artifacts"
+rm -rf "$ROOT_DIR/build/CLI Monitor"
+rm -rf "$ROOT_DIR/dist/CLI Monitor"
+rm -rf "$ROOT_DIR/dist/CLI Monitor.app"
+rm -f "$DMG_PATH"
+rm -rf "$PYI_CONFIG_DIR"
 mkdir -p "$PYI_CONFIG_DIR"
 export PYINSTALLER_CONFIG_DIR="$PYI_CONFIG_DIR"
 export CLI_MONITOR_PANEL_HTML="$RELEASE_PANEL_HTML"
-pyinstaller --noconfirm "$SPEC_FILE"
+pyinstaller --clean --noconfirm "$SPEC_FILE"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "[build] error: app not found: $APP_PATH" >&2
