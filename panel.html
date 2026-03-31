@@ -549,7 +549,7 @@
         }
 
         .header-title {
-            font-size: 16px;
+            font-size: 22px;
             font-weight: 700;
             letter-spacing: 0.3px;
         }
@@ -762,101 +762,23 @@
             opacity: 1;
         }
 
-        .settings-group-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            margin-bottom: 8px;
-        }
-
-        .settings-group-head .settings-label {
-            margin-bottom: 0;
-        }
-
-        .settings-mini-btn {
-            border: 1px solid var(--border-subtle);
-            background: var(--bg-card);
-            color: var(--text-secondary);
-            border-radius: 8px;
-            padding: 5px 8px;
-            font-size: 11px;
-            font-weight: 600;
-            cursor: pointer;
-        }
-
-        .settings-mini-btn:hover {
-            color: var(--text-primary);
-            border-color: var(--border-card);
-        }
-
-        .settings-mini-btn:disabled {
-            opacity: 0.6;
-            cursor: default;
-        }
-
-        .cap-list {
-            display: grid;
-            gap: 8px;
-        }
-
-        .cap-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .cap-badge {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 88px;
-            height: 22px;
-            border-radius: 999px;
-            border: 1px solid var(--border-subtle);
-            font-size: 11px;
-            font-weight: 700;
-            padding: 0 8px;
-        }
-
-        .cap-badge.supported {
-            color: #0f766e;
-            border-color: rgba(13, 148, 136, 0.35);
-            background: rgba(20, 184, 166, 0.12);
-        }
-
-        .cap-badge.unsupported {
-            color: var(--text-tertiary);
-            border-color: var(--border-subtle);
-            background: var(--bg-card);
-        }
-
-        .cap-badge.disabled {
-            color: #c2410c;
-            border-color: rgba(249, 115, 22, 0.35);
-            background: rgba(251, 146, 60, 0.12);
-        }
-
-        .cap-note {
-            margin-top: 8px;
-            font-size: 11px;
-            color: var(--text-tertiary);
-            line-height: 1.35;
-        }
-
         /* ===== 任务网格 ===== */
         .task-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 10px;
-            padding: 20px 0;
+            padding-top: 20px;
             overflow-y: auto;
             flex: 1;
             min-height: 0;
             align-content: start;
+        }
+
+        .task-grid::after {
+            content: '';
+            display: block;
+            height: 20px;
+            grid-column: 1 / -1;
         }
 
         .task-grid::-webkit-scrollbar {
@@ -874,7 +796,7 @@
 
         /* ===== 任务卡片 ===== */
         .task-card {
-            min-height: 116px;
+            min-height: 140px;
             background: var(--bg-card);
             border-radius: 18px;
             padding: 16px 18px 14px 18px;
@@ -1359,9 +1281,9 @@
             border: 1px solid rgba(15, 23, 42, 0.08);
             color: var(--text-secondary);
             font-size: 12px;
-            font-weight: 700;
+            font-weight: 500;
             font-family: 'Inter', sans-serif;
-            min-height: 44px;
+            min-height: 48px;
             padding: 0 18px;
             border-radius: 14px;
             cursor: pointer;
@@ -1396,8 +1318,8 @@
         }
 
         .btn.icon-only {
-            width: 44px;
-            height: 44px;
+            width: 48px;
+            height: 48px;
             padding: 0;
             justify-content: center;
             gap: 0;
@@ -1455,7 +1377,7 @@
     <div class="footer">
         <div class="footer-left">
             <button class="btn" onclick="launchCodex()" id="openCodexBtn" data-testid="open-codex-btn">打开 Codex</button>
-            <button class="btn" onclick="launchCodexMonitored()" id="openCodexMonitoredBtn" data-testid="open-codex-monitored-btn">打开 Codex Monitored</button>
+            <button class="btn" onclick="launchCodexMonitored()" id="openCodexMonitoredBtn" data-testid="open-codex-monitored-btn">Monitor Codex</button>
             <button class="btn icon-only" onclick="clearDone()" title="清除已完成" id="clearDoneBtn" data-testid="clear-done-btn" aria-label="清除已完成">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M3 6h18"></path>
@@ -1492,28 +1414,6 @@
                     </button>
                 </div>
             </div>
-            <div class="settings-group" data-testid="claude-capabilities-group">
-                <div class="settings-group-head">
-                    <div class="settings-label" id="claudeCapabilitiesLabel">Claude 集成能力</div>
-                    <button class="settings-mini-btn" id="refreshClaudeCapsBtn" data-testid="refresh-claude-caps-btn" onclick="refreshClaudeCapabilities()">重新检测</button>
-                </div>
-                <div class="cap-list">
-                    <div class="cap-row">
-                        <span id="capLabelCli">Claude CLI</span>
-                        <span class="cap-badge unsupported" id="capBadgeCli">Unsupported</span>
-                    </div>
-                    <div class="cap-row">
-                        <span id="capLabelRemote">Remote Control</span>
-                        <span class="cap-badge unsupported" id="capBadgeRemote">Unsupported</span>
-                    </div>
-                    <div class="cap-row">
-                        <span id="capLabelStream">Structured Output</span>
-                        <span class="cap-badge unsupported" id="capBadgeStream">Unsupported</span>
-                    </div>
-                </div>
-                <div class="cap-note" id="capRemoteHint"></div>
-                <div class="cap-note" id="capCheckedAt"></div>
-            </div>
         </div>
     </div>
 
@@ -1531,15 +1431,6 @@
         let bridgeBootstrapStarted = false;
         let bridgeBootstrapDone = false;
         let bridgePollHandle = null;
-        let claudeCapabilities = {
-            claude_cli: 'unsupported',
-            remote_control: 'unsupported',
-            remote_control_account: 'unknown',
-            stream_json: 'unsupported',
-            remote_control_hint: '',
-        };
-        let claudeCapabilitiesCheckedAt = 0;
-        let claudeCapabilitiesRefreshing = false;
         let currentLanguage = (() => {
             try {
                 const cached = localStorage.getItem('cli-monitor-language');
@@ -1565,7 +1456,7 @@
                 ui_btn_close: '关闭',
                 ui_btn_delete_task: '删除任务',
                 ui_btn_open_codex: '打开 Codex',
-                ui_btn_open_codex_monitored: '打开 Codex Monitored',
+                ui_btn_open_codex_monitored: 'Monitor Codex',
                 ui_prompt_codex_cwd: '请输入启动目录\n留空则使用默认目录',
                 ui_prompt_monitored_cwd: '请输入启动目录\n留空则使用默认目录',
                 ui_launch_codex_invalid_cwd: '启动目录无效',
@@ -1574,17 +1465,6 @@
                 settings_language: '语言',
                 settings_lang_zh: '中文（简体）',
                 settings_lang_en: 'English',
-                settings_claude_cap_title: 'Claude 集成能力',
-                settings_cap_cli: 'Claude CLI',
-                settings_cap_remote: 'Remote Control',
-                settings_cap_stream: '结构化输出',
-                settings_cap_supported: '已支持',
-                settings_cap_unsupported: '不支持',
-                settings_cap_disabled: '未启用',
-                settings_cap_refresh: '重新检测',
-                settings_cap_refreshing: '检测中...',
-                settings_cap_last_checked: '上次检测: {time}',
-                settings_cap_remote_disabled_hint: 'Remote Control 未在当前账号启用',
                 badge_running: '运行中',
                 badge_idle: '等待输入',
                 badge_waiting: '待确认',
@@ -1610,7 +1490,7 @@
                 ui_btn_close: 'Close',
                 ui_btn_delete_task: 'Delete task',
                 ui_btn_open_codex: 'Open Codex',
-                ui_btn_open_codex_monitored: 'Open Codex Monitored',
+                ui_btn_open_codex_monitored: 'Monitor Codex',
                 ui_prompt_codex_cwd: 'Enter a startup directory\nLeave empty to use the default directory',
                 ui_prompt_monitored_cwd: 'Enter a startup directory\nLeave empty to use the default directory',
                 ui_launch_codex_invalid_cwd: 'Invalid startup directory',
@@ -1619,17 +1499,6 @@
                 settings_language: 'Language',
                 settings_lang_zh: 'Chinese (Simplified)',
                 settings_lang_en: 'English',
-                settings_claude_cap_title: 'Claude Integration',
-                settings_cap_cli: 'Claude CLI',
-                settings_cap_remote: 'Remote Control',
-                settings_cap_stream: 'Structured Output',
-                settings_cap_supported: 'Supported',
-                settings_cap_unsupported: 'Unsupported',
-                settings_cap_disabled: 'Disabled',
-                settings_cap_refresh: 'Recheck',
-                settings_cap_refreshing: 'Checking...',
-                settings_cap_last_checked: 'Last checked: {time}',
-                settings_cap_remote_disabled_hint: 'Remote Control is not enabled for this account',
                 badge_running: 'Running',
                 badge_idle: 'Awaiting Input',
                 badge_waiting: 'Needs Action',
@@ -1665,105 +1534,6 @@
             if (enBtn) enBtn.classList.toggle('active', currentLanguage === 'en-US');
         }
 
-        function normalizeCapStatus(status) {
-            const s = String(status || '').toLowerCase();
-            if (s === 'supported' || s === 'disabled') return s;
-            return 'unsupported';
-        }
-
-        function setClaudeCapabilitiesState(caps, checkedAt) {
-            const c = caps && typeof caps === 'object' ? caps : {};
-            claudeCapabilities = {
-                claude_cli: normalizeCapStatus(c.claude_cli),
-                remote_control: normalizeCapStatus(c.remote_control),
-                remote_control_account: String(c.remote_control_account || 'unknown'),
-                stream_json: normalizeCapStatus(c.stream_json),
-                remote_control_hint: String(c.remote_control_hint || ''),
-            };
-            const ts = Number(checkedAt || 0);
-            claudeCapabilitiesCheckedAt = Number.isFinite(ts) ? Math.max(0, Math.floor(ts)) : 0;
-        }
-
-        function getCapStatusLabel(status) {
-            const s = normalizeCapStatus(status);
-            if (s === 'supported') return tr('settings_cap_supported');
-            if (s === 'disabled') return tr('settings_cap_disabled');
-            return tr('settings_cap_unsupported');
-        }
-
-        function formatCheckedAt(ts) {
-            const n = Number(ts || 0);
-            if (!Number.isFinite(n) || n <= 0) return '';
-            try {
-                const d = new Date(n * 1000);
-                const locale = currentLanguage === 'en-US' ? 'en-US' : 'zh-CN';
-                return d.toLocaleString(locale, {
-                    year: 'numeric',
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: false,
-                });
-            } catch (e) {
-                return '';
-            }
-        }
-
-        function renderClaudeCapabilities() {
-            const capLabel = document.getElementById('claudeCapabilitiesLabel');
-            if (capLabel) capLabel.textContent = tr('settings_claude_cap_title');
-            const capCli = document.getElementById('capLabelCli');
-            if (capCli) capCli.textContent = tr('settings_cap_cli');
-            const capRemote = document.getElementById('capLabelRemote');
-            if (capRemote) capRemote.textContent = tr('settings_cap_remote');
-            const capStream = document.getElementById('capLabelStream');
-            if (capStream) capStream.textContent = tr('settings_cap_stream');
-
-            const refreshBtn = document.getElementById('refreshClaudeCapsBtn');
-            if (refreshBtn) {
-                refreshBtn.textContent = claudeCapabilitiesRefreshing
-                    ? tr('settings_cap_refreshing')
-                    : tr('settings_cap_refresh');
-                refreshBtn.title = tr('settings_cap_refresh');
-                refreshBtn.disabled = !!claudeCapabilitiesRefreshing;
-            }
-
-            const badgeMap = {
-                capBadgeCli: claudeCapabilities.claude_cli,
-                capBadgeRemote: claudeCapabilities.remote_control,
-                capBadgeStream: claudeCapabilities.stream_json,
-            };
-            for (const [id, status] of Object.entries(badgeMap)) {
-                const el = document.getElementById(id);
-                if (!el) continue;
-                const cls = normalizeCapStatus(status);
-                el.classList.remove('supported', 'unsupported', 'disabled');
-                el.classList.add(cls);
-                el.textContent = getCapStatusLabel(cls);
-            }
-
-            const hintEl = document.getElementById('capRemoteHint');
-            if (hintEl) {
-                if (
-                    (
-                        claudeCapabilities.remote_control_account === 'disabled' ||
-                        claudeCapabilities.remote_control_hint === 'account_disabled'
-                    )
-                ) {
-                    hintEl.textContent = tr('settings_cap_remote_disabled_hint');
-                } else {
-                    hintEl.textContent = '';
-                }
-            }
-
-            const checkedEl = document.getElementById('capCheckedAt');
-            if (checkedEl) {
-                const text = formatCheckedAt(claudeCapabilitiesCheckedAt);
-                checkedEl.textContent = text ? tr('settings_cap_last_checked', { time: text }) : '';
-            }
-        }
 
         function applyI18nStaticTexts() {
             const launchSub = document.querySelector('.launch-subtitle');
@@ -1808,7 +1578,6 @@
             if (openCodexMonitoredBtn) openCodexMonitoredBtn.textContent = tr('ui_btn_open_codex_monitored');
             const settingsCloseBtn = document.getElementById('settingsCloseBtn');
             if (settingsCloseBtn) settingsCloseBtn.title = tr('ui_btn_close');
-            renderClaudeCapabilities();
         }
 
         function buildEmptyStateHtml() {
@@ -2110,10 +1879,6 @@
             try {
                 const settings = await pywebview.api.get_settings();
                 setLanguageState(settings && settings.language);
-                setClaudeCapabilitiesState(
-                    settings && settings.claude_capabilities,
-                    settings && settings.claude_capabilities_checked_at
-                );
             } catch (e) {
                 setLanguageState(currentLanguage);
             }
@@ -2141,23 +1906,6 @@
             }
         }
 
-        async function refreshClaudeCapabilities() {
-            if (claudeCapabilitiesRefreshing) return;
-            claudeCapabilitiesRefreshing = true;
-            renderClaudeCapabilities();
-            try {
-                const res = await pywebview.api.refresh_claude_capabilities();
-                setClaudeCapabilitiesState(
-                    res && res.claude_capabilities,
-                    res && res.claude_capabilities_checked_at
-                );
-            } catch (e) {
-                console.error('刷新 Claude 能力失败:', e);
-            } finally {
-                claudeCapabilitiesRefreshing = false;
-                renderClaudeCapabilities();
-            }
-        }
 
         async function selectLanguage(lang) {
             try {
