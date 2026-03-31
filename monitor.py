@@ -1283,12 +1283,10 @@ class MonitorCore:
 
                 # Render subagents as indented tree rows
                 for sub in (t.subagents or []):
-                    if isinstance(sub, dict):
-                        sub_id_short = str(sub.get("subagent_id", "") or "")[:8]
-                        sub_status = str(sub.get("status", "") or "").upper()
-                    else:
-                        sub_id_short = str(getattr(sub, "subagent_id", "") or "")[:8]
-                        sub_status = str(getattr(sub, "status", "") or "").upper()
+                    if not isinstance(sub, dict):
+                        continue
+                    sub_id_short = str(sub.get("subagent_id", "") or "")[:8]
+                    sub_status = str(sub.get("status", "") or "").upper()
                     sub_status_str = format_status(sub_status)
                     print(f"{BOLD}{CYAN}║{RESET}    └─ {sub_id_short:<8} {sub_status_str:<22} {'':>10} {'':>26}{BOLD}{CYAN}║{RESET}")
 

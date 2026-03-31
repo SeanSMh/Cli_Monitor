@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 from threading import RLock
 
-from engine.models import MonitorEvent, TaskState
+from engine.models import MonitorEvent, SubagentState, TaskState
 from engine.reducer import reduce_event
 
 
@@ -34,7 +34,6 @@ class TaskStore:
             return self._states.get(session_id)
 
     def apply_subagent_event(self, parent_session_id: str, subagent_id: str, status: str) -> None:
-        from engine.models import SubagentState
         with self._lock:
             parent = self._states.get(parent_session_id)
             if parent is None:
@@ -55,7 +54,10 @@ class TaskStore:
     def snapshot(self, tool_name: str = "") -> list[TaskState]:
         tool_key = str(tool_name or "").strip().lower()
         with self._lock:
-            states = list(self._states.values())
+            states = []
+            for s in self._states.values():
+                s.subagents = list(s.subagents)
+                states.append(s)
         if tool_key:
             states = [item for item in states if item.tool_name.lower() == tool_key]
         states.sort(key=lambda item: (int(item.updated_at_ms or 0), item.session_id), reverse=True)

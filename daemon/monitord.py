@@ -108,8 +108,10 @@ class _Handler(BaseHTTPRequestHandler):
             parent_sid = str(sub_payload.get("parent_session_id", "") or "")
             subagent_id = str(sub_payload.get("subagent_id", "") or "")
             sub_status = str(sub_payload.get("status", "") or "running")
-            if parent_sid and subagent_id:
-                STORE.apply_subagent_event(parent_sid, subagent_id, sub_status)
+            if not parent_sid or not subagent_id:
+                self._write_json({"error": "missing_fields"}, status=400)
+                return
+            STORE.apply_subagent_event(parent_sid, subagent_id, sub_status)
             self._write_json({"ok": True})
             return
         if not session_id or not source or not tool_name or not event_type:
