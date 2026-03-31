@@ -1566,6 +1566,10 @@
                 ui_btn_delete_task: '删除任务',
                 ui_btn_open_codex: '打开 Codex',
                 ui_btn_open_codex_monitored: '打开 Codex Monitored',
+                ui_prompt_codex_cwd: '请输入启动目录\n留空则使用默认目录',
+                ui_prompt_monitored_cwd: '请输入启动目录\n留空则使用默认目录',
+                ui_launch_codex_invalid_cwd: '启动目录无效',
+                ui_launch_monitored_invalid_cwd: '启动目录无效',
                 settings_title: '设置',
                 settings_language: '语言',
                 settings_lang_zh: '中文（简体）',
@@ -1607,6 +1611,10 @@
                 ui_btn_delete_task: 'Delete task',
                 ui_btn_open_codex: 'Open Codex',
                 ui_btn_open_codex_monitored: 'Open Codex Monitored',
+                ui_prompt_codex_cwd: 'Enter a startup directory\nLeave empty to use the default directory',
+                ui_prompt_monitored_cwd: 'Enter a startup directory\nLeave empty to use the default directory',
+                ui_launch_codex_invalid_cwd: 'Invalid startup directory',
+                ui_launch_monitored_invalid_cwd: 'Invalid startup directory',
                 settings_title: 'Settings',
                 settings_language: 'Language',
                 settings_lang_zh: 'Chinese (Simplified)',
@@ -1939,7 +1947,14 @@
             if (!tasks || tasks.length === 0) {
                 sub.dataset.state = 'idle';
                 sub.textContent = '';
-                if (lastRenderedTaskKeys.length !== 0 || !grid.querySelector('.empty-state')) {
+                const emptyState = grid.querySelector('.empty-state');
+                const emptyTitle = emptyState ? emptyState.querySelector('[data-testid="empty-title"]') : null;
+                const needsEmptyRefresh =
+                    lastRenderedTaskKeys.length !== 0 ||
+                    !emptyState ||
+                    !emptyTitle ||
+                    emptyTitle.dataset.state !== 'empty';
+                if (needsEmptyRefresh) {
                     grid.innerHTML = buildEmptyStateHtml();
                     requestAnimationFrame(() => updateWindowSize(0));
                 }
@@ -2002,20 +2017,28 @@
                 const bodyGap = bodyStyle ? parseFloat(bodyStyle.rowGap) || parseFloat(bodyStyle.gap) || 0 : 0;
 
                 let gridContentH = 0;
-                if (count <= 0) {
-                    const emptyState = grid ? grid.querySelector('.empty-state') : null;
-                    const emptyH = emptyState ? emptyState.offsetHeight : 200;
-                    gridContentH = emptyH + gridPadTop + gridPadBottom;
-                } else {
-                    const rows = Math.ceil(count / 2);
-                    const firstCard = grid ? grid.querySelector('.task-card') : null;
-                    const cardH = firstCard ? firstCard.offsetHeight : 100;
-                    gridContentH = (rows * cardH) + ((rows - 1) * rowGap) + gridPadTop + gridPadBottom;
+                if (grid) {
+                    gridContentH = Math.max(grid.scrollHeight, gridPadTop + gridPadBottom);
+                }
+                if (gridContentH <= 0) {
+                    if (count <= 0) {
+                        const emptyState = grid ? grid.querySelector('.empty-state') : null;
+                        const emptyH = emptyState ? emptyState.offsetHeight : 200;
+                        gridContentH = emptyH + gridPadTop + gridPadBottom;
+                    } else {
+                        const rows = Math.ceil(count / 2);
+                        const firstCard = grid ? grid.querySelector('.task-card') : null;
+                        const cardH = firstCard ? firstCard.offsetHeight : 116;
+                        gridContentH = (rows * cardH) + ((rows - 1) * rowGap) + gridPadTop + gridPadBottom;
+                    }
                 }
 
                 const WINDOW_FRAME_EXTRA = 36;
                 const MIN_WIN_H = 320;
-                const MAX_WIN_H = 650;
+                const screenAvailH = window.screen && Number.isFinite(window.screen.availHeight)
+                    ? window.screen.availHeight
+                    : window.innerHeight;
+                const MAX_WIN_H = Math.max(650, Math.floor(screenAvailH * 0.86));
 
                 const targetH =
                     bodyPadTop +
@@ -2233,7 +2256,13 @@
         async function launchCodex() {
             if (!hasPywebviewApi()) return;
             try {
-                await pywebview.api.launch_codex();
+                const cwd = window.prompt(tr('ui_prompt_codex_cwd'), '');
+                if (cwd === null) return;
+                const res = await pywebview.api.launch_codex_with_cwd(String(cwd || '').trim());
+                if (res && res.ok === false) {
+                    window.alert(res.message || tr('ui_launch_codex_invalid_cwd'));
+                    return;
+                }
                 setTimeout(() => refresh(), 700);
             } catch (e) { console.error('启动 Codex 失败:', e); }
         }
@@ -2241,7 +2270,13 @@
         async function launchCodexMonitored() {
             if (!hasPywebviewApi()) return;
             try {
-                await pywebview.api.launch_codex_monitored();
+                const cwd = window.prompt(tr('ui_prompt_monitored_cwd'), '');
+                if (cwd === null) return;
+                const res = await pywebview.api.launch_codex_monitored_with_cwd(String(cwd || '').trim());
+                if (res && res.ok === false) {
+                    window.alert(res.message || tr('ui_launch_monitored_invalid_cwd'));
+                    return;
+                }
                 setTimeout(() => refresh(), 700);
             } catch (e) { console.error('启动 Codex Monitored 失败:', e); }
         }

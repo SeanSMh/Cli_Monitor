@@ -475,14 +475,37 @@ def _run_osascript(script: str) -> bool:
         return False
 
 
+def _write_terminal_launch_script(command: str) -> str:
+    command = str(command or "").strip()
+    if not command:
+        return ""
+    path = f"/tmp/cli_monitor_terminal_launch_{uuid.uuid4().hex}.sh"
+    script = (
+        "#!/usr/bin/env bash\n"
+        "rm -f \"$0\" >/dev/null 2>&1 || true\n"
+        "printf '\\033[2J\\033[H'\n"
+        f"exec /bin/bash -c {shlex.quote(command)}\n"
+    )
+    try:
+        with open(path, "w", encoding="utf-8") as fp:
+            fp.write(script)
+        os.chmod(path, 0o700)
+        return path
+    except Exception:
+        return ""
+
+
 def _launch_terminal_command(command: str) -> bool:
     command = str(command or "").strip()
     if not command:
         return False
+    launch_script = _write_terminal_launch_script(command)
+    if not launch_script:
+        return False
     script = (
         'tell application "Terminal"\n'
         "activate\n"
-        f"do script {_quote_applescript_string(command)}\n"
+        f"do script {_quote_applescript_string(f'bash {shlex.quote(launch_script)}')}\n"
         "end tell"
     )
     return _run_osascript(script)
@@ -2422,6 +2445,17 @@ class Api:
 
     def launch_codex(self):
         return self._launch_codex_in_terminal(monitored=False)
+
+    def launch_codex_with_cwd(self, cwd):
+        launch_cwd, err = _normalize_launch_cwd(cwd)
+        if str(cwd or "").strip() and err:
+            return {
+                "ok": False,
+                "mode": "normal",
+                "reason": "invalid_cwd",
+                "message": err,
+            }
+        return self._launch_codex_in_terminal(monitored=False, cwd=launch_cwd)
 
     def launch_codex_monitored(self):
         return self._launch_codex_in_terminal(monitored=True)
