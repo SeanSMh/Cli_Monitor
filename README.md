@@ -101,8 +101,8 @@ CLI_MONITOR_E2E=1 CLI_MONITOR_E2E_PORT=18787 python3 panel_app.py
 ## ✅ 质量检查
 
 ```bash
-# 运行状态机回归测试 (标准库 unittest)
-python3 -m unittest -q tests/test_monitor_analyze_log.py tests/test_terminal_adapters.py
+# 运行测试
+python3 -m pytest -q tests
 
 # 面板 E2E 冒烟 (需本机可启动 GUI)
 ./scripts/e2e_panel_flow.sh
@@ -131,9 +131,7 @@ cli-monitor/
 ├── scripts/
 │   ├── build_macos.sh    # macOS 打包脚本
 │   └── e2e_panel_flow.sh # 面板交互链路 E2E 冒烟脚本
-├── tests/
-│   ├── test_monitor_analyze_log.py  # analyze_log + 日志元数据解析测试
-│   └── test_terminal_adapters.py    # 终端跳转适配服务测试
+├── tests/                # pytest 测试集
 ├── install.sh            # 安装脚本
 ├── uninstall.sh          # 卸载脚本
 └── README.md             # 本文件

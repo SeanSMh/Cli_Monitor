@@ -218,7 +218,6 @@ I18N = {
 
 # 临时注入
 TEMP_WRAPPER = "/tmp/cli_monitor_session.sh"
-LEGACY_CODEX_LAUNCHER = "/tmp/codex_launcher.sh"
 INJECT_MARKER = "# >>> cli-monitor-session >>>"
 INJECT_END = "# <<< cli-monitor-session <<<"
 SHELL_WRAPPER_SOURCE = os.path.join(RESOURCE_DIR, "shell", "cli_monitor.sh")
@@ -446,24 +445,6 @@ _claude_cli_capabilities = {
 }
 _claude_cli_capabilities_checked_at = 0
 _claude_cli_capabilities_lock = threading.Lock()
-
-
-def _build_legacy_codex_launcher_content() -> str:
-    return """#!/usr/bin/env bash
-set -e
-real_codex="$(type -P codex 2>/dev/null || true)"
-if [[ -z "$real_codex" && -n "${ZSH_VERSION:-}" ]]; then
-    real_codex="$(whence -p codex 2>/dev/null || true)"
-fi
-if [[ -n "$real_codex" ]]; then
-    exec "$real_codex" "$@"
-fi
-if [[ -x "/Applications/Codex.app/Contents/Resources/codex" ]]; then
-    exec "/Applications/Codex.app/Contents/Resources/codex" "$@"
-fi
-echo "codex binary not found" >&2
-exit 127
-"""
 
 
 def _codex_monitor_mode(tool_name, meta):
@@ -721,11 +702,6 @@ def inject_shell_wrapper():
         with open(TEMP_WRAPPER, "w", encoding="utf-8") as dst:
             dst.write(content)
         os.chmod(TEMP_WRAPPER, 0o644)
-
-        legacy_content = _build_legacy_codex_launcher_content()
-        with open(LEGACY_CODEX_LAUNCHER, "w", encoding="utf-8") as dst:
-            dst.write(legacy_content)
-        os.chmod(LEGACY_CODEX_LAUNCHER, 0o755)
     except Exception as e:
         print(f"[CLI Monitor] 写入临时 wrapper 失败: {e}")
         return False
@@ -783,8 +759,6 @@ def cleanup_shell_wrapper():
     try:
         if os.path.exists(TEMP_WRAPPER):
             os.remove(TEMP_WRAPPER)
-        if os.path.exists(LEGACY_CODEX_LAUNCHER):
-            os.remove(LEGACY_CODEX_LAUNCHER)
     except Exception:
         pass
 
@@ -1018,6 +992,25 @@ def _append_monitor_end_if_missing(log_file, exit_code, end_time_str):
         return False
 
 
+def _pid_is_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        # 保守处理：除明确 ESRCH 外，不把权限或瞬时系统错误误判为进程已退出。
+        return True
+
+
 def _build_session_meta(log_file):
     meta = parse_session_meta(log_file)
 
@@ -1034,6 +1027,21 @@ def _build_session_meta(log_file):
             pass
 
     return SessionMeta.from_mapping(meta)
+
+
+def _normalize_launch_cwd(cwd):
+    raw = str(cwd or "").strip()
+    if not raw:
+        return "", ""
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        expanded = os.path.abspath(os.path.join(os.path.expanduser("~"), expanded))
+    normalized = os.path.normpath(expanded)
+    if not os.path.exists(normalized):
+        return "", "目录不存在"
+    if not os.path.isdir(normalized):
+        return "", "路径不是目录"
+    return normalized, ""
 
 
 def _get_terminal_label(meta):
@@ -1795,7 +1803,13 @@ class Api:
         meta = parse_session_meta(log_file)
         terminal_label = _get_terminal_label(meta)
 
-        tool_name, status, msg, exit_code, duration, signal_ts = analyze_log(log_file)
+        task_state = analyze_log(log_file)
+        tool_name = task_state.tool_name
+        status = task_state.status
+        msg = task_state.message
+        exit_code = task_state.exit_code
+        duration = task_state.duration
+        signal_ts = task_state.signal_ts
         codex_mode = _codex_monitor_mode(tool_name, meta)
 
         if status == "DONE":
@@ -1807,9 +1821,7 @@ class Api:
                 parts = basename.rsplit('_', 3)  # [tool, timestamp, pid, random.log]
                 if len(parts) >= 3:
                     pid = int(parts[2])
-                    try:
-                        os.kill(pid, 0)
-                    except OSError:
+                    if not _pid_is_alive(pid):
                         cached_done = self._forced_done_cache.get(log_file) or {}
                         ended_at = str(cached_done.get("ended_at") or "").strip()
                         if not ended_at:
@@ -2375,19 +2387,25 @@ class Api:
         os.makedirs(LOG_DIR, exist_ok=True)
         subprocess.run(["open", LOG_DIR])
 
-    def _launch_codex_in_terminal(self, monitored=False):
+    def _launch_codex_in_terminal(self, monitored=False, cwd=""):
         if not inject_shell_wrapper():
             return {"ok": False, "mode": "monitored" if monitored else "normal"}
         monitored = bool(monitored)
+        launch_cwd = str(cwd or "").strip()
         launch_token = _new_launch_token()
+        cwd_prefix = ""
+        if launch_cwd:
+            cwd_prefix = f'cd {shlex.quote(launch_cwd)} || exit 1; '
         if monitored:
             command = (
+                f"{cwd_prefix}"
                 f'CLI_MONITOR_LAUNCH_TOKEN={shlex.quote(launch_token)} '
                 f'bash {shlex.quote(CODEX_MONITORED_LAUNCHER)}'
             )
         else:
             wrapper = shlex.quote(TEMP_WRAPPER)
             command = (
+                f"{cwd_prefix}"
                 f'[[ -f {wrapper} ]] || exit 127; '
                 f'source {wrapper}; '
                 'type codex >/dev/null 2>&1 || exit 127; '
@@ -2396,13 +2414,28 @@ class Api:
         ok = _launch_terminal_command(command)
         if ok:
             ok = _wait_for_launch_token("codex", launch_token)
-        return {"ok": ok, "mode": "monitored" if monitored else "normal"}
+        return {
+            "ok": ok,
+            "mode": "monitored" if monitored else "normal",
+            "cwd": launch_cwd,
+        }
 
     def launch_codex(self):
         return self._launch_codex_in_terminal(monitored=False)
 
     def launch_codex_monitored(self):
         return self._launch_codex_in_terminal(monitored=True)
+
+    def launch_codex_monitored_with_cwd(self, cwd):
+        launch_cwd, err = _normalize_launch_cwd(cwd)
+        if str(cwd or "").strip() and err:
+            return {
+                "ok": False,
+                "mode": "monitored",
+                "reason": "invalid_cwd",
+                "message": err,
+            }
+        return self._launch_codex_in_terminal(monitored=True, cwd=launch_cwd)
 
     def delete_task(self, log_file):
         """删除任务日志文件"""
@@ -2440,9 +2473,7 @@ class Api:
                 pid = 0
 
             if pid > 0:
-                try:
-                    os.kill(pid, 0)
-                except OSError:
+                if not _pid_is_alive(pid):
                     self._last_focus_result = {
                         "success": False,
                         "provider": "",
@@ -2576,8 +2607,7 @@ def cleanup_stale_logs():
                 count += 1
                 continue
 
-            # analyze_log returns: tool_name, status, msg, exit_code, duration, signal_ts
-            _, status, _, _, _, _ = analyze_log(log_file)
+            status = analyze_log(log_file).status
 
             # 2. 清理状态为 DONE 的任务
             if status == "DONE":
@@ -2597,9 +2627,7 @@ def cleanup_stale_logs():
                     pid = int(pid_str)
                     
                     # 检查进程是否存在
-                    try:
-                        os.kill(pid, 0) # 发送信号 0 检测进程
-                    except OSError:
+                    if not _pid_is_alive(pid):
                         # 进程不存在 -> 僵尸任务
                         _log(f"发现僵尸任务 (PID {pid} 不存在): {basename}")
                         os.remove(log_file)

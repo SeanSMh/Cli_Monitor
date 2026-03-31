@@ -231,17 +231,6 @@ def _record_claude_parse_hit(source: str):
         _claude_parse_stats["last_source"] = source_key
 
 
-def get_claude_parse_stats():
-    with _claude_parse_stats_lock:
-        data = dict(_claude_parse_stats)
-    total = max(1, int(data.get("total_claude_samples", 0) or 0))
-    signal_hits = int(data.get("notify_waiting_hit_count", 0) or 0) + int(
-        data.get("notify_idle_hit_count", 0) or 0
-    ) + int(data.get("stop_idle_hit_count", 0) or 0)
-    data["signal_rate"] = signal_hits / float(total)
-    return data
-
-
 def _get_codex_runtime_flags():
     codex_conf = config.get("codex", {}) or {}
     official_enabled = bool(codex_conf.get("official_schema_enabled", True))
@@ -276,7 +265,9 @@ def tail_read(filepath, num_bytes=TAIL_BYTES):
             text = raw.decode("utf-8", errors="ignore")
 
         lines = text.splitlines(keepends=True)
-        if file_size > num_bytes and lines:
+        # 仅在 tail chunk 被切断成多行时丢弃第一段残缺行；若整个 chunk 只有一行，
+        # 说明末尾可能本来就没有换行，不能整段丢弃，否则 TUI 日志会退化成空 tail。
+        if file_size > num_bytes and len(lines) > 1:
             lines = lines[1:]
         return lines
     except Exception:
@@ -813,14 +804,12 @@ def track_effective_output_stability(filepath, lines):
             continue
         parts.append(s)
     signature = " | ".join(parts[-4:])
-    if not signature:
-        _effective_output_stability.pop(filepath, None)
-        return "", 0.0
+    signature_key = signature or "__EMPTY__"
 
     cached = _effective_output_stability.get(filepath)
-    if not cached or cached.get("signature") != signature:
+    if not cached or cached.get("signature") != signature_key:
         _effective_output_stability[filepath] = {
-            "signature": signature,
+            "signature": signature_key,
             "stable_since": now,
         }
         return signature, 0.0
@@ -1082,8 +1071,20 @@ def analyze_log(filepath):
     if is_claude:
         busy_context = "".join(semantic_detect_lines[-5:])
     busy_in_tail = any(re.search(p, busy_context, re.IGNORECASE) for p in busy_patterns)
+    effective_signature = ""
+    stable_seconds = 0.0
+    effective_busy_in_tail = busy_in_tail
+    if is_claude:
+        effective_signature, stable_seconds = track_effective_output_stability(
+            filepath, semantic_detect_lines[-20:]
+        )
+        # Claude 在完成后常只留下空白/控制序列；此时即便尾部仍残留旧 busy 文本，
+        # 也不应长期锁在 RUNNING。
+        pseudo_busy_after = max(tool_weak_idle_seconds, 3.0)
+        if not effective_signature and busy_in_tail and stable_seconds >= pseudo_busy_after:
+            effective_busy_in_tail = False
 
-    if is_claude and not busy_in_tail and _detect_summary_completion(
+    if is_claude and not effective_busy_in_tail and _detect_summary_completion(
         visible_detect_lines, tool_name
     ):
         _record_claude_parse_hit("text_fallback")
@@ -1091,11 +1092,8 @@ def analyze_log(filepath):
             tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text", codex_proxy_backed=codex_proxy_backed
         )
 
-    if is_claude and not busy_in_tail and tool_weak_idle_seconds > 0:
-        effective_signature, stable_seconds = track_effective_output_stability(
-            filepath, semantic_detect_lines[-20:]
-        )
-        if effective_signature and stable_seconds >= tool_weak_idle_seconds:
+    if is_claude and not effective_busy_in_tail and tool_weak_idle_seconds > 0:
+        if stable_seconds >= tool_weak_idle_seconds:
             _record_claude_parse_hit("text_fallback")
             return _return_status(
                 tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text", codex_proxy_backed=codex_proxy_backed
@@ -1158,7 +1156,7 @@ def analyze_log(filepath):
 
         if is_claude:
             # Claude 无 hook 信号时走更保守的纯文本 idle 兜底，减少 RUNNING/IDLE 抖动。
-            if not busy_in_tail and idle_seconds > max(tool_idle_threshold, 30.0):
+            if not effective_busy_in_tail and idle_seconds > max(tool_idle_threshold, 30.0):
                 _record_claude_parse_hit("text_fallback")
                 return _return_status(
                     tool_name, "IDLE", "等待输入", -1, "", 0, codex_source="text", codex_proxy_backed=codex_proxy_backed

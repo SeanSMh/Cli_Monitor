@@ -145,10 +145,3 @@ def ensure_watcher(parent_session_id: str, subagents_dir: Path) -> SubagentWatch
         watcher.start()
         _watchers[parent_session_id] = watcher
         return watcher
-
-
-def stop_all() -> None:
-    with _watchers_lock:
-        for w in _watchers.values():
-            w.stop()
-        _watchers.clear()
