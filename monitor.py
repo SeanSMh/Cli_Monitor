@@ -274,22 +274,55 @@ def tail_read(filepath, num_bytes=TAIL_BYTES):
         return []
 
 
-def parse_start_info(filepath):
-    tool_name = "unknown"
-    start_time = ""
+_META_KEYS = {
+    "term_program", "term_program_version", "tty", "cwd", "shell_pid", "shell_ppid",
+    "wezterm_pane_id", "warp_session_id", "vscode_pid", "vscode_cwd",
+    "vscode_ipc_hook_cli", "vscode_git_askpass_main", "vscode_git_askpass_node",
+    "vscode_git_ipc_handle", "vscode_injection", "cursor_trace_id",
+    "terminal_emulator", "idea_initial_directory", "jetbrains_ide_name",
+    "jetbrains_ide_product", "android_studio_version", "state_source",
+    "session_id", "proxy_url", "real_app_server_url", "launch_token",
+}
+
+_RE_MONITOR_META = re.compile(r"MONITOR_META\s+([a-zA-Z0-9_]+):\s*(.*?)\s*---\s*$")
+
+
+def _read_log_head(filepath, max_lines=24):
+    """
+    Single-pass read of log file header.
+    Returns (first_line, meta_dict) — replaces the two separate opens previously
+    done by parse_start_info and parse_session_meta.
+    """
+    first_line = ""
+    meta = {k: "" for k in _META_KEYS}
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            first_line = f.readline()
-        match = re.search(r"MONITOR_START:\s*(\S+)\s*\|\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", first_line)
-        if match:
-            tool_name = match.group(1)
-            start_time = match.group(2).strip()
-        else:
-            match = re.search(r"MONITOR_START:\s*(\S+)", first_line)
-            if match:
-                tool_name = match.group(1)
+            for i, line in enumerate(f):
+                if i == 0:
+                    first_line = line
+                if i >= max_lines:
+                    break
+                if "MONITOR_META" in line:
+                    m = _RE_MONITOR_META.search(line.strip())
+                    if m and m.group(1) in meta:
+                        meta[m.group(1)] = m.group(2).strip()
     except Exception:
         pass
+    return first_line, meta
+
+
+def parse_start_info(filepath):
+    first_line, _meta = _read_log_head(filepath)
+    tool_name = "unknown"
+    start_time = ""
+    match = re.search(r"MONITOR_START:\s*(\S+)\s*\|\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", first_line)
+    if match:
+        tool_name = match.group(1)
+        start_time = match.group(2).strip()
+    else:
+        match = re.search(r"MONITOR_START:\s*(\S+)", first_line)
+        if match:
+            tool_name = match.group(1)
 
     if tool_name == "unknown":
         try:
@@ -315,48 +348,7 @@ def parse_session_meta(filepath, max_lines=24):
         ...
       }
     """
-    meta = {
-        "term_program": "",
-        "term_program_version": "",
-        "tty": "",
-        "cwd": "",
-        "shell_pid": "",
-        "shell_ppid": "",
-        "wezterm_pane_id": "",
-        "warp_session_id": "",
-        "vscode_pid": "",
-        "vscode_cwd": "",
-        "vscode_ipc_hook_cli": "",
-        "vscode_git_askpass_main": "",
-        "vscode_git_askpass_node": "",
-        "vscode_git_ipc_handle": "",
-        "vscode_injection": "",
-        "cursor_trace_id": "",
-        "terminal_emulator": "",
-        "idea_initial_directory": "",
-        "jetbrains_ide_name": "",
-        "jetbrains_ide_product": "",
-        "android_studio_version": "",
-        "state_source": "",
-        "session_id": "",
-        "proxy_url": "",
-        "real_app_server_url": "",
-        "launch_token": "",
-    }
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            for line in islice(f, max_lines):
-                if "MONITOR_META" not in line:
-                    continue
-                match = re.search(r"MONITOR_META\s+([a-zA-Z0-9_]+):\s*(.*?)\s*---\s*$", line.strip())
-                if not match:
-                    continue
-                key = match.group(1)
-                value = match.group(2).strip()
-                if key in meta:
-                    meta[key] = value
-    except Exception:
-        pass
+    _first_line, meta = _read_log_head(filepath, max_lines)
 
     tty = meta.get("tty", "").strip()
     if tty and tty != "not a tty" and tty != "?":
@@ -684,14 +676,22 @@ def _detect_summary_completion(lines, tool_name):
     return summary_hits >= 3 and strong_hits >= 1
 
 
+# Pre-compiled ANSI escape sequence patterns (module-level for reuse across calls)
+_RE_ANSI_CSI = re.compile(r'\033\[[0-9;?]*[A-Za-z]')
+_RE_ANSI_OSC = re.compile(r'\033\][^\x07\x1b]*(?:\x07|\033\\)')
+_RE_ANSI_ALT = re.compile(r'\033\[[=>][0-9;]*[A-Za-z]')
+_RE_ANSI_CHARSET = re.compile(r'\033[()][A-Z0-9]')
+_RE_ANSI_OSC_FRAG = re.compile(r'(?:\]\d{1,3};\?)+')
+
+
 def strip_ansi_text(s):
-    s = re.sub(r'\033\[[0-9;?]*[A-Za-z]', '', s)
+    s = _RE_ANSI_CSI.sub('', s)
     # OSC 序列可用 BEL 或 ST(ESC \\) 结束；JetBrains/JediTerm 常见颜色查询会走这里。
-    s = re.sub(r'\033\][^\x07\x1b]*(?:\x07|\033\\)', '', s)
-    s = re.sub(r'\033\[[=>][0-9;]*[A-Za-z]', '', s)
-    s = re.sub(r'\033[()][A-Z0-9]', '', s)
+    s = _RE_ANSI_OSC.sub('', s)
+    s = _RE_ANSI_ALT.sub('', s)
+    s = _RE_ANSI_CHARSET.sub('', s)
     # 某些终端会留下裸露的 OSC 查询残片（如 ]10;?]11;?），显示层直接剔除。
-    s = re.sub(r'(?:\]\d{1,3};\?)+', '', s)
+    s = _RE_ANSI_OSC_FRAG.sub('', s)
     return s
 
 
@@ -1180,61 +1180,90 @@ class MonitorCore:
         self.log_dir = log_dir
         self.max_tasks = max_tasks
         self.enable_sound = enable_sound
-        
+
         self.tasks_cache = []  # List[DisplayTask]
         self.lock = Lock()
         self.needs_render = True
         self.timers = {}
-        
-        # Debounce/Throttle configurations
-        self.debounce_ms = 0.1 
+        # Per-file task cache for incremental updates
+        self._file_task_map: dict[str, DisplayTask] = {}
 
-    def _analyze_all(self):
-        """全量扫描 + 合并 daemon 中的 Claude 任务"""
+        # Debounce/Throttle configurations
+        self.debounce_ms = 0.1
+
+    def _rebuild_tasks_cache(self):
+        """
+        Gather data and rebuild tasks_cache. Must be called WITHOUT holding self.lock.
+        Moves I/O (glob, HTTP) outside the lock; only the final merge+assign is locked.
+        """
+        # I/O outside lock: directory scan + HTTP request to daemon
         log_files = glob.glob(os.path.join(self.log_dir, "*.log"))
         log_files.sort(key=os.path.getmtime, reverse=True)
         active_files = log_files[:self.max_tasks]
 
-        results: list[DisplayTask] = []
-        for f in active_files:
-            results.append(analyze_log(f))
+        daemon_resp = get_daemon_state("claude")  # up to 350ms timeout, must be outside lock
 
-        # Merge Claude sessions from daemon (higher priority, no log file needed)
-        daemon_resp = get_daemon_state("claude")
-        if daemon_resp and isinstance(daemon_resp.get("tasks"), list):
-            seen_session_ids = {t.session_id for t in results if t.session_id}
-            for task_dict in daemon_resp["tasks"]:
-                sid = str(task_dict.get("session_id", "") or "")
-                if not sid or sid in seen_session_ids:
-                    continue
-                status_raw = str(task_dict.get("status", "") or "").upper()
-                results.insert(0, DisplayTask(
-                    tool_name="claude",
-                    status=status_raw,
-                    message=str(task_dict.get("message", "") or ""),
-                    session_id=sid,
-                    rate_limit_reset_at=task_dict.get("rate_limit_reset_at"),
-                    subagents=task_dict.get("subagents") or [],
-                ))
-
-        results = results[:self.max_tasks]
         with self.lock:
+            results: list[DisplayTask] = [self._file_task_map[f] for f in active_files if f in self._file_task_map]
+
+            # Merge Claude sessions from daemon (higher priority, no log file needed)
+            if daemon_resp and isinstance(daemon_resp.get("tasks"), list):
+                seen_session_ids = {t.session_id for t in results if t.session_id}
+                for task_dict in daemon_resp["tasks"]:
+                    sid = str(task_dict.get("session_id", "") or "")
+                    if not sid or sid in seen_session_ids:
+                        continue
+                    status_raw = str(task_dict.get("status", "") or "").upper()
+                    results.insert(0, DisplayTask(
+                        tool_name="claude",
+                        status=status_raw,
+                        message=str(task_dict.get("message", "") or ""),
+                        session_id=sid,
+                        rate_limit_reset_at=task_dict.get("rate_limit_reset_at"),
+                        subagents=task_dict.get("subagents") or [],
+                    ))
+
+            results = results[:self.max_tasks]
             if results != self.tasks_cache:
                 self.tasks_cache = results
                 self.needs_render = True
 
+    def _analyze_one(self, filepath):
+        """Analyze a single log file and update cache incrementally."""
+        task = analyze_log(filepath)  # heavy I/O, outside lock
+        with self.lock:
+            self._file_task_map[filepath] = task
+        self._rebuild_tasks_cache()  # called outside lock
+
+    def _analyze_all(self):
+        """全量扫描 + 合并 daemon 中的 Claude 任务 (startup and new file discovery)"""
+        log_files = glob.glob(os.path.join(self.log_dir, "*.log"))
+        log_files.sort(key=os.path.getmtime, reverse=True)
+        active_files = log_files[:self.max_tasks]
+
+        # Collect files needing analysis under lock (eliminates check-then-set race)
+        with self.lock:
+            to_analyze = [f for f in active_files if f not in self._file_task_map]
+
+        # Analyze outside lock, then write back each result under lock
+        for f in to_analyze:
+            task = analyze_log(f)
+            with self.lock:
+                self._file_task_map[f] = task
+
+        self._rebuild_tasks_cache()  # called outside lock
+
     def on_file_change(self, filepath):
-        """事件回调：单文件更新"""
+        """事件回调：单文件增量更新"""
         if not filepath.endswith(".log"):
             return
-            
-        # 简单策略：只要有变动就触发一次全量简析（为了排序等），后续可优化为增量更新
-        # 为了避免高频 IO，这里做 Debounce
+
+        # Debounce: cancel pending timer for this file, schedule incremental analysis
         with self.lock:
             if filepath in self.timers:
                 self.timers[filepath].cancel()
-            
-            t = Timer(self.debounce_ms, self._analyze_all)
+
+            t = Timer(self.debounce_ms, self._analyze_one, args=[filepath])
             t.start()
             self.timers[filepath] = t
 
