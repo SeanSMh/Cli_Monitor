@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -1690,6 +1691,29 @@ def _request_app_terminate():
         return False
 
 
+@dataclass
+class NotificationTaskState:
+    prev_status: str = ""
+    last_signal_ts: int = 0
+    last_waiting_fingerprint: str = ""
+    last_event_key: str = ""
+    last_event_priority: int = 0
+    last_event_time: float = 0.0
+    unread_count: int = 0
+    semantic_waiting: dict = field(default_factory=dict)
+    semantic_idle: dict = field(default_factory=dict)
+    forced_done: dict = field(default_factory=dict)
+
+
+@dataclass
+class LogScanCacheEntry:
+    mtime: float = 0.0
+    tool_name: str = ""
+    normalized_lines: list = field(default_factory=list)
+    waiting_lines: list = field(default_factory=list)
+    effective_lines: list = field(default_factory=list)
+
+
 # ===========================================
 # pywebview JS API
 # ===========================================
@@ -1697,20 +1721,123 @@ def _request_app_terminate():
 
 class Api:
     def __init__(self):
+        self._lock = threading.RLock()
         self._last_notify_time = {}  # Key: "filepath:status" -> timestamp
-        self._last_signal_ts = {}    # Key: log_file -> last_notified_signal_ts
-        self._task_states = {}       # Key: log_file -> last_status
-        self._last_event_key = {}    # Key: log_file -> last_event_dedupe_key
-        self._last_event_priority = {}  # Key: log_file -> last_event_priority
-        self._last_event_time = {}   # Key: log_file -> last_event_notify_time
-        self._first_run = True       # 启动时不通知
+        self._notification_states = {}  # Key: log_file -> NotificationTaskState
+        self._log_scan_cache = {}  # Key: log_file -> LogScanCacheEntry
+        self._first_run = True     # 启动时不通知
         self._unread_notification_count = 0  # 未读通知数 (用于状态栏角标)
-        self._unread_by_task = {}    # Key: log_file -> unread_count
         self._last_focus_result = {"success": False, "provider": "", "reason": ""}
-        self._last_waiting_fingerprint = {}  # Key: log_file -> normalized waiting context
-        self._semantic_waiting_cache = {}  # Key: log_file -> {tool,message,fingerprint}
-        self._semantic_idle_cache = {}  # Key: log_file -> {tool,message,fingerprint}
-        self._forced_done_cache = {}  # Key: log_file -> {ended_at,duration,exit_code}
+        self._latest_tasks = []
+        self._latest_tasks_at = 0.0
+        self._task_cache_ttl = 0.25
+        self._notification_poll_interval = 1.0
+        self._notification_thread = threading.Thread(
+            target=self._notification_poll_worker,
+            name="cli-monitor-notification-poller",
+            daemon=True,
+        )
+        self._notification_thread.start()
+
+    def _get_notification_state(self, log_file):
+        key = str(log_file or "").strip()
+        if not key:
+            return NotificationTaskState()
+        state = self._notification_states.get(key)
+        if state is None:
+            state = NotificationTaskState()
+            self._notification_states[key] = state
+        return state
+
+    def _drop_notification_state(self, log_file):
+        key = str(log_file or "").strip()
+        if not key:
+            return
+        self._notification_states.pop(key, None)
+        self._log_scan_cache.pop(key, None)
+
+    def _get_log_scan_snapshot(self, log_file, tool_name):
+        log_file = str(log_file or "").strip()
+        tool_name = str(tool_name or "").strip().lower()
+        if not log_file:
+            return LogScanCacheEntry(tool_name=tool_name)
+        try:
+            mtime = float(os.path.getmtime(log_file))
+        except Exception:
+            mtime = 0.0
+        cached = self._log_scan_cache.get(log_file)
+        if cached and cached.mtime == mtime and cached.tool_name == tool_name:
+            return cached
+
+        normalized_lines = []
+        waiting_lines = []
+        effective_lines = []
+        try:
+            for line in tail_read(log_file)[-20:]:
+                s = strip_ansi_text(line)
+                if is_system_output_line(s):
+                    continue
+                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
+                if not s:
+                    continue
+                if is_display_noise_line(s, tool_name):
+                    continue
+                normalized = self._normalize_event_text(s, 120)
+                if not normalized:
+                    continue
+                normalized_lines.append(normalized)
+                if (
+                    _WAITING_MENU_LINE_RE.search(normalized)
+                    or _WAITING_HINT_RE.search(normalized)
+                    or _WAITING_CONFIRM_LINE_RE.search(normalized)
+                ):
+                    waiting_lines.append(normalized)
+                    continue
+                if normalized not in _GENERIC_RUNNING_MESSAGES:
+                    effective_lines.append(normalized)
+        except Exception:
+            pass
+
+        snapshot = LogScanCacheEntry(
+            mtime=mtime,
+            tool_name=tool_name,
+            normalized_lines=normalized_lines,
+            waiting_lines=waiting_lines,
+            effective_lines=effective_lines,
+        )
+        self._log_scan_cache[log_file] = snapshot
+        return snapshot
+
+    def _collect_tasks(self, lang):
+        if not os.path.exists(LOG_DIR):
+            return []
+
+        log_files = glob.glob(os.path.join(LOG_DIR, "*.log"))
+        log_files.sort(key=os.path.getmtime, reverse=True)
+
+        tasks = []
+        for log_file in log_files[:MAX_TASKS]:
+            task = self._build_task_for_log(log_file, lang)
+            if task:
+                tasks.append(task)
+        return tasks
+
+    def _notification_poll_worker(self):
+        while not _app_quitting:
+            try:
+                with self._lock:
+                    tasks = self._collect_tasks(get_current_language())
+                    self._latest_tasks = tasks
+                    self._latest_tasks_at = time.time()
+                    self._check_notifications(tasks)
+                    update_status_icon(self._unread_notification_count)
+            except Exception as e:
+                _log(f"notification poll failed: {e}")
+            time.sleep(self._notification_poll_interval)
+
+    def _invalidate_task_cache(self):
+        self._latest_tasks = []
+        self._latest_tasks_at = 0.0
 
     def get_settings(self):
         settings = get_app_settings()
@@ -1744,9 +1871,10 @@ class Api:
         duration = task_state.duration
         signal_ts = task_state.signal_ts
         codex_mode = _codex_monitor_mode(tool_name, meta)
+        state = self._get_notification_state(log_file)
 
         if status == "DONE":
-            self._forced_done_cache.pop(log_file, None)
+            state.forced_done.clear()
 
         if status != "DONE":
             try:
@@ -1755,7 +1883,7 @@ class Api:
                 if len(parts) >= 3:
                     pid = int(parts[2])
                     if not _pid_is_alive(pid):
-                        cached_done = self._forced_done_cache.get(log_file) or {}
+                        cached_done = state.forced_done or {}
                         ended_at = str(cached_done.get("ended_at") or "").strip()
                         if not ended_at:
                             ended_at = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -1767,7 +1895,7 @@ class Api:
                         duration = str(cached_done.get("duration") or "").strip()
                         if not duration:
                             duration = calculate_duration(start_time, ended_at)
-                        self._forced_done_cache[log_file] = {
+                        state.forced_done = {
                             "ended_at": ended_at,
                             "duration": duration,
                             "exit_code": exit_code,
@@ -1816,61 +1944,58 @@ class Api:
         }
 
     def get_tasks(self):
-        if not os.path.exists(LOG_DIR):
-            return []
-
-        log_files = glob.glob(os.path.join(LOG_DIR, "*.log"))
-        log_files.sort(key=os.path.getmtime, reverse=True)
-
-        tasks = []
-        lang = get_current_language()
-
-        for log_file in log_files[:MAX_TASKS]:
-            task = self._build_task_for_log(log_file, lang)
-            if task:
-                tasks.append(task)
-
-        self._check_notifications(tasks)
-        update_status_icon(self._unread_notification_count)
-
-        return tasks
+        with self._lock:
+            if self._latest_tasks_at > 0 and (time.time() - self._latest_tasks_at) <= self._task_cache_ttl:
+                return list(self._latest_tasks)
+            tasks = self._collect_tasks(get_current_language())
+            self._latest_tasks = tasks
+            self._latest_tasks_at = time.time()
+            update_status_icon(self._unread_notification_count)
+            return list(tasks)
 
     def refresh_task(self, task_key):
-        log_file = str(task_key or "").strip()
-        if not log_file or not log_file.startswith(LOG_DIR):
-            return {"ok": False, "reason": "invalid_task"}
-        if not os.path.exists(log_file):
-            return {"ok": False, "reason": "not_found"}
+        with self._lock:
+            log_file = str(task_key or "").strip()
+            if not log_file or not log_file.startswith(LOG_DIR):
+                return {"ok": False, "reason": "invalid_task"}
+            if not os.path.exists(log_file):
+                return {"ok": False, "reason": "not_found"}
 
-        # 手动刷新视为用户已查看该任务；仅重算当前卡片，不触发通知，不改变聚焦。
-        self._clear_unread_for_task(log_file)
-        self._semantic_waiting_cache.pop(log_file, None)
+            # 手动刷新视为用户已查看该任务；仅重算当前卡片，不触发通知，不改变聚焦。
+            self._clear_unread_for_task(log_file)
+            state = self._get_notification_state(log_file)
+            state.semantic_waiting.clear()
 
-        task = self._build_task_for_log(log_file, get_current_language())
-        if not task:
-            return {"ok": False, "reason": "not_found"}
+            task = self._build_task_for_log(log_file, get_current_language())
+            if not task:
+                return {"ok": False, "reason": "not_found"}
 
-        self._task_states[log_file] = task["status"]
-        if task["status"] in _WAITING_STATUSES:
-            self._last_waiting_fingerprint[log_file] = self._build_waiting_fingerprint(task)
-        else:
-            self._last_waiting_fingerprint.pop(log_file, None)
-        signal_ts = int(task.get("signal_ts", 0) or 0)
-        if signal_ts > 0:
-            self._last_signal_ts[log_file] = signal_ts
+            state.prev_status = task["status"]
+            if task["status"] in _WAITING_STATUSES:
+                state.last_waiting_fingerprint = self._build_waiting_fingerprint(task)
+            else:
+                state.last_waiting_fingerprint = ""
+            signal_ts = int(task.get("signal_ts", 0) or 0)
+            if signal_ts > 0:
+                state.last_signal_ts = signal_ts
 
-        return {"ok": True, "changed": True, "task": task}
+            return {"ok": True, "changed": True, "task": task}
 
     def clear_unread_notifications(self):
-        self._unread_notification_count = 0
-        self._unread_by_task.clear()
-        update_status_icon(0)
+        with self._lock:
+            self._unread_notification_count = 0
+            for state in self._notification_states.values():
+                state.unread_count = 0
+            update_status_icon(0)
 
     def _clear_unread_for_task(self, log_file):
         log_file = str(log_file or "").strip()
         if not log_file:
             return 0
-        removed = int(self._unread_by_task.pop(log_file, 0) or 0)
+        state = self._notification_states.get(log_file)
+        removed = int(state.unread_count if state else 0)
+        if state is not None:
+            state.unread_count = 0
         if removed > 0:
             self._unread_notification_count = max(0, self._unread_notification_count - removed)
             update_status_icon(self._unread_notification_count)
@@ -1883,8 +2008,9 @@ class Api:
         log_file = str(log_file or "").strip()
         if not log_file:
             return
+        state = self._get_notification_state(log_file)
         self._unread_notification_count += 1
-        self._unread_by_task[log_file] = int(self._unread_by_task.get(log_file, 0) or 0) + 1
+        state.unread_count += 1
 
     def _build_waiting_fingerprint(self, task):
         """为 WAITING 状态构建事件指纹，捕捉同状态下菜单/选项内容变化。"""
@@ -1895,35 +2021,12 @@ class Api:
         parts = []
         if stable_message and stable_message not in _GENERIC_WAITING_MESSAGES:
             parts.append(stable_message)
-        try:
-            lines = tail_read(log_file)
-            cleaned = []
-            for line in lines[-20:]:
-                s = strip_ansi_text(line)
-                if is_system_output_line(s):
-                    continue
-                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
-                if not s:
-                    continue
-                if is_display_noise_line(s, tool_name):
-                    continue
-                if (
-                    _WAITING_MENU_LINE_RE.search(s)
-                    or _WAITING_HINT_RE.search(s)
-                    or _WAITING_CONFIRM_LINE_RE.search(s)
-                ):
-                    cleaned.append(s)
-            if cleaned:
-                for line in cleaned[-6:]:
-                    normalized = self._normalize_event_text(line, 120)
-                    if not normalized:
-                        continue
-                    if normalized not in parts:
-                        parts.append(normalized)
-            if parts:
-                return " | ".join(parts)
-        except Exception:
-            pass
+        snapshot = self._get_log_scan_snapshot(log_file, tool_name)
+        for normalized in snapshot.waiting_lines[-6:]:
+            if normalized not in parts:
+                parts.append(normalized)
+        if parts:
+            return " | ".join(parts)
         if stable_message:
             return stable_message
         return re.sub(r"\s+", " ", fallback)
@@ -1942,30 +2045,10 @@ class Api:
             and stable_fallback not in _GENERIC_WAITING_MESSAGES
         ):
             parts.append(stable_fallback)
-        try:
-            lines = tail_read(log_file)
-            waiting_lines = []
-            for line in lines[-20:]:
-                s = strip_ansi_text(line)
-                if is_system_output_line(s):
-                    continue
-                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
-                if not s:
-                    continue
-                if is_display_noise_line(s, tool_name):
-                    continue
-                if (
-                    _WAITING_MENU_LINE_RE.search(s)
-                    or _WAITING_HINT_RE.search(s)
-                    or _WAITING_CONFIRM_LINE_RE.search(s)
-                ):
-                    waiting_lines.append(s)
-            for line in waiting_lines[-6:]:
-                normalized = self._normalize_event_text(line, 120)
-                if normalized and normalized not in parts:
-                    parts.append(normalized)
-        except Exception:
-            pass
+        snapshot = self._get_log_scan_snapshot(log_file, tool_name)
+        for normalized in snapshot.waiting_lines[-6:]:
+            if normalized and normalized not in parts:
+                parts.append(normalized)
         if parts:
             return " | ".join(parts)
         if include_fallback:
@@ -1992,24 +2075,8 @@ class Api:
         log_file = str(log_file or "").strip()
         tool_name = str(tool_name or "").strip().lower()
         fallback = self._normalize_event_text(fallback, 120)
-        parts = []
-        try:
-            lines = tail_read(log_file)
-            for line in lines[-20:]:
-                s = strip_ansi_text(line)
-                if is_system_output_line(s):
-                    continue
-                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
-                if not s:
-                    continue
-                if is_display_noise_line(s, tool_name):
-                    continue
-                normalized = self._normalize_event_text(s, 120)
-                if not normalized:
-                    continue
-                parts.append(normalized)
-        except Exception:
-            pass
+        snapshot = self._get_log_scan_snapshot(log_file, tool_name)
+        parts = list(snapshot.normalized_lines)
         if parts:
             return " | ".join(parts[-6:])
         return fallback
@@ -2018,33 +2085,11 @@ class Api:
         log_file = str(log_file or "").strip()
         tool_name = str(tool_name or "").strip().lower()
         cached_message = self._normalize_event_text(cached_message, 120)
-        try:
-            lines = tail_read(log_file)
-            for line in reversed(lines[-20:]):
-                s = strip_ansi_text(line)
-                if is_system_output_line(s):
-                    continue
-                s = re.sub(r"[\x00-\x1f\x7f]", "", s).strip()
-                if not s:
-                    continue
-                if is_display_noise_line(s, tool_name):
-                    continue
-                normalized = self._normalize_event_text(s, 120)
-                if not normalized:
-                    continue
-                if (
-                    _WAITING_MENU_LINE_RE.search(normalized)
-                    or _WAITING_HINT_RE.search(normalized)
-                    or _WAITING_CONFIRM_LINE_RE.search(normalized)
-                ):
-                    continue
-                if normalized in _GENERIC_RUNNING_MESSAGES:
-                    continue
-                if cached_message and normalized == cached_message:
-                    continue
-                return True
-        except Exception:
-            return False
+        snapshot = self._get_log_scan_snapshot(log_file, tool_name)
+        for normalized in reversed(snapshot.effective_lines):
+            if cached_message and normalized == cached_message:
+                continue
+            return True
         return False
 
     def _apply_semantic_waiting_hold(self, log_file, tool_name, status, message):
@@ -2057,10 +2102,11 @@ class Api:
             return status, message
 
         if status in _WAITING_STATUSES:
+            state = self._get_notification_state(log_file)
             fingerprint = self._build_semantic_waiting_fingerprint(
                 log_file, tool_name, message, include_fallback=True
             )
-            self._semantic_waiting_cache[log_file] = {
+            state.semantic_waiting = {
                 "tool": tool_name,
                 "message": message or "等待确认输入",
                 "fingerprint": fingerprint,
@@ -2068,13 +2114,13 @@ class Api:
             return status, message
 
         if status in {"IDLE", "DONE"}:
-            self._semantic_waiting_cache.pop(log_file, None)
+            self._get_notification_state(log_file).semantic_waiting.clear()
             return status, message
 
         if status != "RUNNING":
             return status, message
 
-        cached = self._semantic_waiting_cache.get(log_file)
+        cached = self._get_notification_state(log_file).semantic_waiting
         if not cached:
             return status, message
 
@@ -2100,7 +2146,7 @@ class Api:
             if not self._has_new_effective_output(log_file, tool_name, cached.get("message", "")):
                 return "WAITING", str(cached.get("message", "") or message or "等待确认输入")
 
-        self._semantic_waiting_cache.pop(log_file, None)
+        self._get_notification_state(log_file).semantic_waiting.clear()
         return status, message
 
     def _apply_semantic_idle_hold(self, log_file, tool_name, status, message):
@@ -2113,7 +2159,7 @@ class Api:
             return status, message
 
         if status == "IDLE":
-            self._semantic_idle_cache[log_file] = {
+            self._get_notification_state(log_file).semantic_idle = {
                 "tool": tool_name,
                 "message": message or "等待输入",
                 "fingerprint": self._build_semantic_idle_fingerprint(
@@ -2123,13 +2169,13 @@ class Api:
             return status, message
 
         if status in (_WAITING_STATUSES | {"DONE"}):
-            self._semantic_idle_cache.pop(log_file, None)
+            self._get_notification_state(log_file).semantic_idle.clear()
             return status, message
 
         if status != "RUNNING":
             return status, message
 
-        cached = self._semantic_idle_cache.get(log_file)
+        cached = self._get_notification_state(log_file).semantic_idle
         if not cached:
             return status, message
 
@@ -2144,7 +2190,7 @@ class Api:
             if not self._has_new_effective_output(log_file, tool_name, cached.get("message", "")):
                 return "IDLE", str(cached.get("message", "") or message or "等待输入")
 
-        self._semantic_idle_cache.pop(log_file, None)
+        self._get_notification_state(log_file).semantic_idle.clear()
         return status, message
 
     def _normalize_event_text(self, text, limit=120):
@@ -2168,9 +2214,10 @@ class Api:
             return None
 
         if status in _WAITING_STATUSES:
+            state = self._get_notification_state(log_file)
             waiting_fp = self._build_waiting_fingerprint(task)
-            prev_waiting_fp = self._last_waiting_fingerprint.get(log_file, "")
-            self._last_waiting_fingerprint[log_file] = waiting_fp
+            prev_waiting_fp = state.last_waiting_fingerprint
+            state.last_waiting_fingerprint = waiting_fp
             fp_key = self._normalize_event_text(waiting_fp, 140)
             if status == prev_status and fp_key == self._normalize_event_text(prev_waiting_fp, 140):
                 return None
@@ -2181,7 +2228,7 @@ class Api:
                 "dedupe_key": f"{log_file}:{status}:{fp_key}",
             }
 
-        self._last_waiting_fingerprint.pop(log_file, None)
+        self._get_notification_state(log_file).last_waiting_fingerprint = ""
 
         if status != "IDLE":
             return None
@@ -2221,20 +2268,22 @@ class Api:
         # 首次运行: 仅初始化状态, 不发通知
         if self._first_run:
             for task in tasks:
-                self._task_states[task["log_file"]] = task["status"]
+                state = self._get_notification_state(task["log_file"])
+                state.prev_status = task["status"]
                 # 记录初始信号时间戳，避免启动时重复通知
                 if task.get("signal_ts", 0) > 0:
-                    self._last_signal_ts[task["log_file"]] = task["signal_ts"]
+                    state.last_signal_ts = int(task["signal_ts"] or 0)
             self._first_run = False
             return
 
         for task in tasks:
             log_file = task["log_file"]
             status = task["status"]
-            prev_status = self._task_states.get(log_file)
+            state = self._get_notification_state(log_file)
+            prev_status = state.prev_status
 
             # 更新状态记录
-            self._task_states[log_file] = status
+            state.prev_status = status
 
             # 用户在终端里继续操作后，任务通常会从 WAITING/IDLE 回到 RUNNING。
             # 这说明对应提醒已被处理，自动清理该任务未读计数。
@@ -2252,56 +2301,40 @@ class Api:
             if now - self._last_notify_time.get(dedupe_key, 0) < 5:
                 continue
 
-            last_key = self._last_event_key.get(log_file, "")
+            last_key = state.last_event_key
             if last_key == dedupe_key:
                 continue
 
             priority = int(event.get("priority", 0) or 0)
-            last_priority = int(self._last_event_priority.get(log_file, 0) or 0)
-            last_event_time = float(self._last_event_time.get(log_file, 0) or 0)
+            last_priority = int(state.last_event_priority or 0)
+            last_event_time = float(state.last_event_time or 0)
             # 抑制同任务短时间内的“优先级回落”通知，减少状态抖动噪音。
             if priority < last_priority and (now - last_event_time) < 8:
                 continue
 
             signal_ts = int(event.get("signal_ts", 0) or 0)
-            if signal_ts > 0 and signal_ts <= int(self._last_signal_ts.get(log_file, 0) or 0):
+            if signal_ts > 0 and signal_ts <= int(state.last_signal_ts or 0):
                 continue
 
             title, subtitle, body = _build_notification_payload(task)
             send_notification(title, subtitle, body)
 
             self._last_notify_time[dedupe_key] = now
-            self._last_event_key[log_file] = dedupe_key
-            self._last_event_priority[log_file] = priority
-            self._last_event_time[log_file] = now
+            state.last_event_key = dedupe_key
+            state.last_event_priority = priority
+            state.last_event_time = now
             if signal_ts > 0:
-                self._last_signal_ts[log_file] = signal_ts
+                state.last_signal_ts = signal_ts
             self._mark_notification_seen_or_unread(log_file)
 
         # 清理已不存在任务的事件状态，避免缓存无限增长。
-        for mapping in (
-            self._task_states,
-            self._last_signal_ts,
-            self._last_waiting_fingerprint,
-            self._semantic_waiting_cache,
-            self._semantic_idle_cache,
-            self._forced_done_cache,
-            self._last_event_key,
-            self._last_event_priority,
-            self._last_event_time,
-        ):
-            for key in list(mapping.keys()):
-                if key not in live_log_files:
-                    mapping.pop(key, None)
-
         removed_unread = 0
-        for key in list(self._unread_by_task.keys()):
+        for key in list(self._notification_states.keys()):
             if key not in live_log_files:
-                removed_unread += int(self._unread_by_task.pop(key, 0) or 0)
+                removed_unread += int(self._notification_states.get(key).unread_count or 0)
+                self._drop_notification_state(key)
         if removed_unread > 0:
-            self._unread_notification_count = max(
-                0, self._unread_notification_count - removed_unread
-            )
+            self._unread_notification_count = max(0, self._unread_notification_count - removed_unread)
 
         # last_notify_time 是按事件维度缓存，做按任务+时间窗口清理避免无限增长。
         for key, ts in list(self._last_notify_time.items()):
@@ -2385,13 +2418,8 @@ class Api:
         """删除任务日志文件"""
         try:
             self._clear_unread_for_task(log_file)
-            self._last_waiting_fingerprint.pop(log_file, None)
-            self._semantic_waiting_cache.pop(log_file, None)
-            self._task_states.pop(log_file, None)
-            self._last_signal_ts.pop(log_file, None)
-            self._last_event_key.pop(log_file, None)
-            self._last_event_priority.pop(log_file, None)
-            self._last_event_time.pop(log_file, None)
+            self._drop_notification_state(log_file)
+            self._invalidate_task_cache()
             for key in list(self._last_notify_time.keys()):
                 if str(key).startswith(f"{log_file}:"):
                     self._last_notify_time.pop(key, None)
