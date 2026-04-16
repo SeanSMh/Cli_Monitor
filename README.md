@@ -1,170 +1,55 @@
-# CLI Monitor — 终端任务状态监控系统
+# CLI Monitor
 
-一个**零侵入**、**零依赖**的 CLI 任务状态监控工具。
+CLI Monitor 是一款 macOS 菜单栏应用，用于在一处集中监控 AI CLI（命令行）会话。它可以帮助您追踪像 `Codex`、`Claude Code` 和 `Gemini` 这样的工具，并直观显示任务是处于运行中、等待输入、需要确认、已完成还是已关闭状态。
 
-在多终端并发执行长耗时任务（AI 代码生成、编译打包等）时，帮你实时感知每个任务的状态——特别是"等待确认"和"任务结束"。
-
-## 📥 下载 (Download)
+## 📥 下载
 
 **最新 macOS 安装包 (.dmg):** [点击下载 monitor.dmg.zip](https://bril.top/monitor.dmg.zip)
 
----
+## 核心特性
 
-## ✨ 特性
+- 自动监控 AI CLI 会话状态
+- 支持 `运行中 (Running)`、`等待输入 (Awaiting Input)`、`需要操作 (Needs Action)`、`已完成 (Completed)` 和 `已关闭 (Closed)` 状态
+- 将菜单栏未读计数与系统通知无缝集成
+- 任务卡片支持跳转到终端、单卡片刷新和清除记录
+- 支持浅色和深色主题切换
+- 支持中文和英文 UI 界面
+- 可打包为 macOS 的 `.app` 和 `.dmg` 文件
 
-- **0 源码修改** — 不需要修改任何 CLI 工具（Claude, Codex, Gradle 等）
-- **0 习惯改变** — 继续用 `claude ...`、`gradle ...` 等原有命令
-- **0 依赖安装** — 纯 Python 标准库 + Shell 原生 `script` 命令
-- **跨平台** — 自动识别 macOS / Linux，选用对应 `script` 参数
-- **实时看板** — 🟢 运行中 / 🟡 待确认(闪烁) / ⚪ 已结束
-- **macOS 状态栏** — 状态栏小工具，待确认时推送系统通知
-- **终端跳转适配** — 已支持 iTerm2 / Terminal，并内置 Warp / WezTerm / VS Code 适配框架
+## 使用场景
 
-## 📦 快速安装
+CLI Monitor 专为并行运行多个 AI 编程工具的开发者设计。
+当您使用 `Codex`、`Claude Code` 或其他基于终端的 AI 助手工作时，它可以帮您快速看清：
 
-```bash
-# 1. 运行安装脚本
-bash install.sh
+- 哪个任务正在运行
+- 哪个任务正在等待您的输入
+- 哪个任务需要确认
+- 哪个任务已经完成或意外退出
 
-# 2. 使配置生效
-source ~/.zshrc
-```
+## 当前支持
 
-## 🚀 使用方法
+- Codex
+- Claude Code
+- Gemini
+- Gradle / Maven 构建结果检测
+- 多种终端和 IDE 数据源，如 Terminal、iTerm2、Cursor 和 Android Studio
 
-### 启动监控面板
+## 产品特点
 
-在一个独立的终端窗口中运行：
+1. 轻量级  
+作为菜单栏应用在后台运行，绝不打断您的日常工作流。
 
-```bash
-python3 monitor.py
-```
+2. 专注  
+使用紧凑的任务卡片，仅展示最重要的状态和摘要信息，不堆砌无用数据。
 
-### 正常使用 CLI 工具
+3. 实用  
+专为交互式 AI CLI 工作流打造，而不仅仅是通用的终端日志查看器。
 
-在另一个终端窗口中照常使用命令：
+## 支持平台
 
-```bash
-claude "帮我生成一个 Android Activity"
-gradle assembleDebug
-```
+- macOS
+- 提供 `.app` 和 `.dmg` 分发格式
 
-监控面板会自动显示任务状态变化。
+## 版本
 
-### 监控面板参数
-
-```bash
-python3 monitor.py --help
-
-# 可用选项:
-#   --sound           遇到「待确认」状态时播放提示音
-#   --max-tasks N     最多显示 N 个任务 (默认: 5)
-#   --log-dir DIR     自定义日志目录 (默认: /tmp/ai_monitor_logs)
-#   --refresh SECS    刷新频率 (默认: 1.0 秒)
-```
-
-## 🛠️ 动态管理监控工具
-
-```bash
-# 添加新工具监控
-ai_monitor_add npm
-
-# 移除工具监控
-ai_monitor_remove npm
-
-# 查看当前监控列表
-ai_monitor_list
-```
-
-## 🖥️ macOS 状态栏应用
-
-除了终端看板，还提供 macOS 状态栏小工具：
-
-```bash
-# 安装依赖
-pip3 install pyinstaller pywebview watchdog pyobjc-framework-Cocoa
-
-# 直接运行 (开发模式)
-python3 panel_app.py
-
-# 或打包为独立 .app
-./scripts/build_macos.sh
-# 生成的应用在 dist/CLI Monitor.app
-```
-
-状态栏显示 🛡️ 图标，有待确认任务时自动变为 ⚠️ 并推送系统通知。
-
-E2E 调试模式（自动化校验用）：
-
-```bash
-CLI_MONITOR_E2E=1 CLI_MONITOR_E2E_PORT=18787 python3 panel_app.py
-# GET  /state
-# POST /toggle_panel
-# POST /set_unread?count=1
-# POST /focus_task?log_file=/tmp/ai_monitor_logs/xxx.log
-```
-
-## ✅ 质量检查
-
-```bash
-# 运行测试
-python3 -m pytest -q tests
-
-# 面板 E2E 冒烟 (需本机可启动 GUI)
-./scripts/e2e_panel_flow.sh
-
-# macOS 打包并校验产物
-./scripts/build_macos.sh
-```
-
-## 🗑️ 卸载
-
-```bash
-bash uninstall.sh
-source ~/.zshrc
-```
-
-## 📁 项目结构
-
-```
-cli-monitor/
-├── shell/
-│   └── cli_monitor.sh   # 注入层: Shell 包装函数
-├── monitor.py            # 监控层: Python 终端看板
-├── panel_app.py          # macOS 面板 + 状态栏应用
-├── terminal_adapters.py  # 终端跳转适配层 (iTerm2/Terminal/Warp/WezTerm/VS Code)
-├── CLI Monitor.spec      # PyInstaller 构建配置 (onedir)
-├── scripts/
-│   ├── build_macos.sh    # macOS 打包脚本
-│   └── e2e_panel_flow.sh # 面板交互链路 E2E 冒烟脚本
-├── tests/                # pytest 测试集
-├── install.sh            # 安装脚本
-├── uninstall.sh          # 卸载脚本
-└── README.md             # 本文件
-```
-
-## ⚙️ 工作原理
-
-```
-用户终端  ──Alias拦截──▶  Shell Wrapper  ──前台──▶  正常终端交互
-                              │
-                        后台流写入
-                              │
-                              ▼
-                    临时日志文件 (/tmp/...)
-                              │
-                         实时读取
-                              │
-                              ▼
-                     Python 监控看板  ──▶  状态判定
-                                         🟢 运行中
-                                         🟡 待确认
-                                         ⚪ 已结束
-```
-
-## 📝 兼容性
-
-| 平台 | `script` 版本 | 状态 |
-|------|-------------|------|
-| macOS | BSD script | ✅ 已支持 |
-| Linux | GNU script | ✅ 已支持 |
+当前版本：`0.0.10`
